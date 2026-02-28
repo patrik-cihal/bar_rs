@@ -47,10 +47,10 @@ fn deg(d: f32) -> f32 {
 pub fn commander_animation_system(
     time: Res<Time>,
     mut commanders: Query<
-        (Entity, &mut Transform, &mut CommanderWalkAnim, Option<&MoveTarget>, Option<&AttackTarget>),
+        (Entity, &mut Transform, &mut CommanderWalkAnim, Option<&MoveTarget>, Option<&AttackTarget>, Option<&ReclaimTarget>, Option<&BuildTarget>),
         With<Commander>,
     >,
-    target_transforms: Query<&Transform, (With<Unit>, Without<Commander>)>,
+    target_transforms: Query<&GlobalTransform, Without<Commander>>,
     children_query: Query<&Children>,
     name_query: Query<&Name>,
     mut transform_query: Query<&mut Transform, (Without<Commander>, Without<Unit>)>,
@@ -58,8 +58,8 @@ pub fn commander_animation_system(
     let dt = time.delta_secs();
     let t = time.elapsed_secs();
 
-    for (cmd_entity, mut tf, mut walk_anim, move_target, attack_target) in &mut commanders {
-        let is_moving = move_target.is_some();
+    for (cmd_entity, mut tf, mut walk_anim, move_target, attack_target, reclaim_target, build_target) in &mut commanders {
+        let is_moving = move_target.is_some() || attack_target.is_some() || reclaim_target.is_some() || build_target.is_some();
         walk_anim.active = is_moving;
 
         if is_moving {
@@ -73,14 +73,22 @@ pub fn commander_animation_system(
 
         // Determine facing direction
         let pos = game_xy(&tf.translation);
-        let face_dir = if let Some(MoveTarget(target)) = move_target {
-            (*target - pos).normalize_or_zero()
-        } else if let Some(AttackTarget(target_entity)) = attack_target {
-            if let Ok(target_tf) = target_transforms.get(*target_entity) {
-                (game_xy(&target_tf.translation) - pos).normalize_or_zero()
+        let face_toward_entity = |entity: Entity| -> Vec2 {
+            if let Ok(target_tf) = target_transforms.get(entity) {
+                let tpos = target_tf.translation();
+                (game_xy(&tpos) - pos).normalize_or_zero()
             } else {
                 Vec2::ZERO
             }
+        };
+        let face_dir = if let Some(MoveTarget(target)) = move_target {
+            (*target - pos).normalize_or_zero()
+        } else if let Some(AttackTarget(e)) = attack_target {
+            face_toward_entity(*e)
+        } else if let Some(ReclaimTarget(e)) = reclaim_target {
+            face_toward_entity(*e)
+        } else if let Some(BuildTarget(e)) = build_target {
+            face_toward_entity(*e)
         } else {
             Vec2::ZERO
         };

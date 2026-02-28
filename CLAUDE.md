@@ -25,7 +25,7 @@ Code is split into modules under `src/`:
   - `movement.rs` — unit movement, building construction
   - `combat.rs` — combat system, projectile system
   - `economy.rs` — resource production, factory production, reclaim, wreckage decay
-  - `environment.rs` — wall repel, fog of war
+  - `environment.rs` — collision, terrain follow, fog of war
   - `visuals.rs` — death explosion, health bars, selection indicators, build ghost, HUD, minimap, win/lose
   - `animation.rs` — commander walk, artillery walk, vehicle turret aim, building animations (extractor spin, radar dish, LLT turret, factory cagelight), unit facing
 
@@ -45,6 +45,7 @@ Assets:
 - **Commander**: Has procedural walk animation via `CommanderWalkAnim`
 - **Non-commander units**: Face movement/attack direction via `unit_facing_system`
 - **Fallback**: Cylinder (units) / Cuboid (buildings) if model not found
+- **Terrain**: Procedural heightmap mesh (101x101 grid) with multi-octave noise, vertex-colored (green/brown/grey by height), flattened near spawn areas and map edges
 - **Lighting**: Two `DirectionalLight`s (sun with shadows + fill)
 - **GPU fix**: `NoIndirectDrawing` on camera + disabled GPU preprocessing (required for Intel iGPUs)
 
@@ -75,10 +76,11 @@ Assets:
 - `GameOver` — win/lose state
 - `DGunMode` — D-Gun targeting active
 - `ModelLibrary` — HashMap of all loaded model Handle<Scene>s (keyed by "{name}_{color}")
+- `TerrainHeightmap` — Procedural heightmap grid with `height_at(x, y)` for terrain queries
 
 **Systems (Update schedule, three groups):**
 1. Chained: cursor → camera → selection → build mode → building placement → unit commands → factory queue → dgun → movement → construction
-2. Parallel: combat → projectile → resource production → factory production → reclaim → wreckage decay → wall repel → fog of war
+2. Parallel: combat → projectile → resource production → factory production → reclaim → wreckage decay → collision → fog of war → terrain follow
 3. Parallel: death explosion → health bars → selection indicators → build ghost → HUD → minimap → win/lose
 4. Parallel: commander animation → biped walk → vehicle turret → building animation → LLT turret → unit facing → artillery facing
 

@@ -17,6 +17,7 @@ pub fn combat_system(
     )>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    terrain: Res<TerrainHeightmap>,
     time: Res<Time>,
 ) {
     let dt = time.delta_secs();
@@ -94,7 +95,7 @@ pub fn combat_system(
                 unlit: true,
                 ..default()
             })),
-            Transform::from_translation(game_pos(from_pos.x, from_pos.y, 1.5)),
+            Transform::from_translation(game_pos(from_pos.x, from_pos.y, terrain.height_at(from_pos.x, from_pos.y) + 1.5)),
             Projectile {
                 target,
                 damage,
@@ -145,7 +146,7 @@ pub fn combat_system(
                     unlit: true,
                     ..default()
                 })),
-                Transform::from_translation(game_pos(pos.x, pos.y, 2.0)),
+                Transform::from_translation(game_pos(pos.x, pos.y, terrain.height_at(pos.x, pos.y) + 2.0)),
                 DeathExplosion {
                     timer: 0.0,
                     max_radius: COMMANDER_DEATH_RADIUS,
@@ -160,7 +161,7 @@ pub fn combat_system(
                 unlit: false,
                 ..default()
             })),
-            Transform::from_translation(game_pos(pos.x, pos.y, 0.1)),
+            Transform::from_translation(game_pos(pos.x, pos.y, terrain.height_at(pos.x, pos.y) + 0.1)),
             Wreckage {
                 metal_value: *metal_value,
                 decay_timer: WRECKAGE_DECAY_TIME,

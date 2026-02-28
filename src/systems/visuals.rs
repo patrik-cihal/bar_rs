@@ -78,6 +78,7 @@ pub fn selection_indicator_system(
 pub fn build_ghost_system(
     build_mode: Res<BuildMode>,
     cursor_pos: Res<CursorWorldPos>,
+    terrain: Res<TerrainHeightmap>,
     metal_spots: Query<&Transform, With<MetalSpot>>,
     mut ghost_q: Query<(&mut Transform, &mut Visibility), (With<BuildGhost>, Without<MetalSpot>)>,
 ) {
@@ -111,7 +112,7 @@ pub fn build_ghost_system(
     let bs = btype.stats();
     let size = Vec2::new(bs.size.0, bs.size.1);
 
-    let world_pos = game_pos(pos.x, pos.y, 0.5);
+    let world_pos = game_pos(pos.x, pos.y, terrain.height_at(pos.x, pos.y) + 0.5);
     tf.translation = world_pos;
     tf.scale = Vec3::new(size.x / 40.0, 1.0, size.y / 40.0); // Scale relative to base ghost mesh size
 }

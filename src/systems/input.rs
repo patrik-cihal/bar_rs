@@ -10,6 +10,7 @@ use crate::types::*;
 pub fn update_cursor_world_pos(
     window_q: Query<&Window>,
     camera_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    terrain: Res<TerrainHeightmap>,
     mut cursor_pos: ResMut<CursorWorldPos>,
 ) {
     let Ok(window) = window_q.single() else {
@@ -19,11 +20,22 @@ pub fn update_cursor_world_pos(
         return;
     };
     if let Some(screen_pos) = window.cursor_position() {
-        // Cast ray from camera and intersect with Y=0 ground plane
+        // Cast ray from camera and intersect with terrain surface
+        // Iterative approach: intersect at estimated height, refine
         if let Ok(ray) = camera.viewport_to_world(cam_transform, screen_pos) {
             let dir_y = ray.direction.y;
             if dir_y.abs() > 0.001 {
-                let t = -ray.origin.y / dir_y;
+                let mut plane_y = 0.0_f32;
+                for _ in 0..3 {
+                    let t = (plane_y - ray.origin.y) / dir_y;
+                    if t > 0.0 {
+                        let hit = ray.origin + *ray.direction * t;
+                        let game_x = hit.x;
+                        let game_y = -hit.z;
+                        plane_y = terrain.height_at(game_x, game_y);
+                    }
+                }
+                let t = (plane_y - ray.origin.y) / dir_y;
                 if t > 0.0 {
                     let hit = ray.origin + *ray.direction * t;
                     cursor_pos.0 = Vec2::new(hit.x, -hit.z);
@@ -400,6 +412,7 @@ pub fn dgun_input(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    terrain: Res<TerrainHeightmap>,
     selected_commanders: Query<(Entity, &Transform), (With<Selected>, With<Commander>, With<PlayerOwned>)>,
 ) {
     if keyboard.just_pressed(KeyCode::KeyG) {
@@ -437,7 +450,7 @@ pub fn dgun_input(
 
             let target_entity = commands
                 .spawn((
-                    Transform::from_translation(game_pos(end_pos.x, end_pos.y, 0.0)),
+                    Transform::from_translation(game_pos(end_pos.x, end_pos.y, terrain.height_at(end_pos.x, end_pos.y))),
                     Unit {
                         hp: 1.0,
                         max_hp: 1.0,
@@ -461,7 +474,7 @@ pub fn dgun_input(
                     unlit: true,
                     ..default()
                 })),
-                Transform::from_translation(game_pos(cmd_pos.x, cmd_pos.y, 1.5)),
+                Transform::from_translation(game_pos(cmd_pos.x, cmd_pos.y, terrain.height_at(cmd_pos.x, cmd_pos.y) + 1.5)),
                 Projectile {
                     target: target_entity,
                     damage: 9999.0,

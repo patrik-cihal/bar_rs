@@ -51,6 +51,7 @@ fn main() {
                 dgun_input,
                 unit_movement,
                 building_construction,
+                terrain_follow_system,
             )
                 .chain(),
         )

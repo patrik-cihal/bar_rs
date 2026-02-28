@@ -1,5 +1,6 @@
 use bevy::prelude::*;
-use bevy::light::CascadeShadowConfigBuilder;
+use bevy::light::{CascadeShadowConfigBuilder, GlobalAmbientLight};
+use bevy::mesh::{Indices, VertexAttributeValues, PrimitiveTopology};
 use bevy::render::view::NoIndirectDrawing;
 use std::collections::HashMap;
 
@@ -32,7 +33,7 @@ pub fn setup_camera(mut commands: Commands) {
         },
         Transform::from_rotation(Quat::from_euler(
             EulerRot::XYZ,
-            -1.0, // steep angle down
+            -0.7, // moderate angle down (less steep = longer shadows)
             0.5,  // slightly from the side
             0.0,
         )),
@@ -59,6 +60,13 @@ pub fn setup_camera(mut commands: Commands) {
             0.0,
         )),
     ));
+
+    // Ambient light so shadowed/backlit terrain isn't pitch black
+    commands.insert_resource(GlobalAmbientLight {
+        color: Color::srgb(0.6, 0.65, 0.8),
+        brightness: 200.0,
+        ..default()
+    });
 }
 
 pub fn setup_map(
@@ -79,15 +87,25 @@ pub fn setup_map(
     }
     let model_library = ModelLibrary { models };
 
-    // Map background — large flat box on ground
+    // Generate terrain heightmap
+    let terrain = TerrainHeightmap::generate();
+
+    // Debug: print height range
+    let min_h = terrain.heights.iter().cloned().fold(f32::INFINITY, f32::min);
+    let max_h = terrain.heights.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    info!("Terrain heights: min={:.2}, max={:.2}", min_h, max_h);
+
+    // Build terrain mesh from heightmap
+    let terrain_mesh = build_terrain_mesh(&terrain);
     commands.spawn((
-        Mesh3d(meshes.add(Cuboid::new(MAP_SIZE, 0.1, MAP_SIZE))),
+        Mesh3d(meshes.add(terrain_mesh)),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.25, 0.35, 0.2),
-            perceptual_roughness: 0.9,
+            base_color: Color::WHITE,
+            perceptual_roughness: 0.95,
+            metallic: 0.0,
             ..default()
         })),
-        Transform::from_translation(game_pos(MAP_SIZE / 2.0, MAP_SIZE / 2.0, -0.05)),
+        Transform::IDENTITY,
     ));
 
     // Metal spots
@@ -112,7 +130,7 @@ pub fn setup_map(
                 unlit: false,
                 ..default()
             })),
-            Transform::from_translation(game_pos(pos.x, pos.y, 0.0))
+            Transform::from_translation(game_pos(pos.x, pos.y, terrain.height_at(pos.x, pos.y)))
                 .with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_4)),
             MetalSpot,
         ));
@@ -142,7 +160,7 @@ pub fn setup_map(
                 unlit: false,
                 ..default()
             })),
-            Transform::from_translation(game_pos(pos.x, pos.y, 0.05)),
+            Transform::from_translation(game_pos(pos.x, pos.y, terrain.height_at(pos.x, pos.y) + 0.05)),
             MapFeature { metal_value: metal },
         ));
     }
@@ -155,28 +173,6 @@ pub fn setup_map(
         Vec2::new(200.0, 200.0),
         true,
         None,
-        &model_library,
-    );
-
-    // Player buildings near start (for testing animations)
-    spawn_building_entity(
-        &mut commands,
-        &mut meshes,
-        &mut materials,
-        Vec2::new(300.0, 300.0),
-        BuildingType::MetalExtractor,
-        true,
-        true,
-        &model_library,
-    );
-    spawn_building_entity(
-        &mut commands,
-        &mut meshes,
-        &mut materials,
-        Vec2::new(350.0, 200.0),
-        BuildingType::SolarCollector,
-        true,
-        true,
         &model_library,
     );
 
@@ -242,6 +238,7 @@ pub fn setup_map(
     );
 
     commands.insert_resource(model_library);
+    commands.insert_resource(terrain);
 
     // Build ghost entity (invisible initially) — flat 3D quad
     commands.spawn((
@@ -335,4 +332,92 @@ pub fn setup_hud(mut commands: Commands) {
         BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.7)),
         MinimapFrame,
     ));
+}
+
+fn build_terrain_mesh(terrain: &TerrainHeightmap) -> Mesh {
+    let gs = TERRAIN_GRID_SIZE;
+    let num_verts = gs * gs;
+    let mut positions = Vec::with_capacity(num_verts);
+    let mut normals = Vec::with_capacity(num_verts);
+    let mut colors = Vec::with_capacity(num_verts);
+    let mut uvs = Vec::with_capacity(num_verts);
+
+    // Generate vertices
+    for gy in 0..gs {
+        for gx in 0..gs {
+            let wx = gx as f32 * terrain.cell_size;
+            let wy = gy as f32 * terrain.cell_size;
+            let h = terrain.heights[gy * gs + gx];
+
+            // World coords: game (x,y) -> world (x, height, -y)
+            positions.push([wx, h, -wy]);
+            uvs.push([gx as f32 / (gs - 1) as f32, gy as f32 / (gs - 1) as f32]);
+
+            // Color based on height: green lowlands -> brown hills -> grey peaks
+            // Vertex colors replace base_color in PBR shader (linear space)
+            // Use Color::srgb().to_linear() equivalent by providing sRGB values directly
+            // since Bevy's vertex colors go through sRGB->linear in the pipeline
+            let t = (h / TERRAIN_MAX_HEIGHT).clamp(0.0, 1.0);
+            let color = if t < 0.3 {
+                // Dark green to light green
+                let s = t / 0.3;
+                Color::srgb(0.30 + s * 0.15, 0.50 + s * 0.15, 0.20 + s * 0.08)
+            } else if t < 0.7 {
+                // Green to brown
+                let s = (t - 0.3) / 0.4;
+                Color::srgb(0.45 + s * 0.25, 0.65 - s * 0.20, 0.28 - s * 0.05)
+            } else {
+                // Brown to grey rock
+                let s = (t - 0.7) / 0.3;
+                Color::srgb(0.70 + s * 0.10, 0.45 + s * 0.20, 0.23 + s * 0.25)
+            };
+            let lin = color.to_linear();
+            colors.push([lin.red, lin.green, lin.blue, 1.0]);
+
+            // Placeholder normal (will compute below)
+            normals.push([0.0, 1.0, 0.0]);
+        }
+    }
+
+    // Compute normals from neighboring heights
+    for gy in 0..gs {
+        for gx in 0..gs {
+            let idx = gy * gs + gx;
+            let h_l = if gx > 0 { terrain.heights[idx - 1] } else { terrain.heights[idx] };
+            let h_r = if gx < gs - 1 { terrain.heights[idx + 1] } else { terrain.heights[idx] };
+            let h_d = if gy > 0 { terrain.heights[idx - gs] } else { terrain.heights[idx] };
+            let h_u = if gy < gs - 1 { terrain.heights[idx + gs] } else { terrain.heights[idx] };
+
+            let dx = (h_r - h_l) / (2.0 * terrain.cell_size);
+            let dy = (h_u - h_d) / (2.0 * terrain.cell_size);
+            let n = Vec3::new(-dx, 1.0, dy).normalize();
+            normals[idx] = [n.x, n.y, n.z];
+        }
+    }
+
+    // Generate triangle indices
+    let num_quads = (gs - 1) * (gs - 1);
+    let mut indices = Vec::with_capacity(num_quads * 6);
+    for gy in 0..(gs - 1) {
+        for gx in 0..(gs - 1) {
+            let i = (gy * gs + gx) as u32;
+            let row = gs as u32;
+            // Two triangles per quad (CCW winding for upward-facing normals)
+            indices.push(i);
+            indices.push(i + 1);
+            indices.push(i + row);
+
+            indices.push(i + 1);
+            indices.push(i + row + 1);
+            indices.push(i + row);
+        }
+    }
+
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, default());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, VertexAttributeValues::Float32x4(colors));
+    mesh.insert_indices(Indices::U32(indices));
+    mesh
 }

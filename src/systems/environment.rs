@@ -95,6 +95,19 @@ pub fn building_collision_system(
     }
 }
 
+// --- Terrain Follow ---
+
+pub fn terrain_follow_system(
+    terrain: Res<TerrainHeightmap>,
+    mut units: Query<&mut Transform, With<Unit>>,
+) {
+    for mut tf in &mut units {
+        let gpos = game_xy(&tf.translation);
+        let h = terrain.height_at(gpos.x, gpos.y);
+        tf.translation.y = h;
+    }
+}
+
 // --- Fog of War ---
 
 pub fn fog_of_war_system(

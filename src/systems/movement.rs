@@ -89,17 +89,15 @@ pub fn unit_movement(
 
 pub fn building_construction(
     mut commands: Commands,
-    mut buildings: Query<(Entity, &mut Building, &Transform, Option<&MeshMaterial3d<StandardMaterial>>)>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut buildings: Query<(Entity, &mut Building, &mut Transform)>,
     commanders: Query<(Entity, &Transform, Option<&BuildTarget>), (With<Commander>, With<PlayerOwned>, Without<Building>)>,
-    children_query: Query<&Children>,
-    descendant_materials: Query<&MeshMaterial3d<StandardMaterial>, Without<Building>>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
     time: Res<Time>,
 ) {
     let dt = time.delta_secs();
 
-    for (building_entity, mut building, building_tf, mat_handle) in &mut buildings {
+    for (building_entity, mut building, mut building_tf) in &mut buildings {
         if building.built {
             continue;
         }
@@ -163,37 +161,11 @@ pub fn building_construction(
             }
         }
 
-        // Always update opacity based on build progress (even when builder not present)
+        // Scale Y based on build progress — building "rises from the ground"
         let progress = (building.build_progress / building.build_time).min(1.0);
-        let target_alpha = if building.built { 1.0 } else { 0.3 + progress * 0.7 };
-        let target_alpha_mode = if building.built { AlphaMode::Opaque } else { AlphaMode::Blend };
-
-        // Update alpha on fallback mesh buildings (direct MeshMaterial3d)
-        if let Some(mat_handle) = mat_handle {
-            if let Some(mat) = materials.get_mut(mat_handle) {
-                let base_color = mat.base_color;
-                mat.base_color = base_color.with_alpha(target_alpha);
-                mat.alpha_mode = target_alpha_mode;
-            }
-        }
-
-        // Update alpha on SceneRoot building descendants
-        let mut stack: Vec<Entity> = Vec::new();
-        if let Ok(children) = children_query.get(building_entity) {
-            stack.extend(children.iter());
-        }
-        while let Some(child) = stack.pop() {
-            if let Ok(mat_handle) = descendant_materials.get(child) {
-                if let Some(mat) = materials.get_mut(mat_handle) {
-                    let base_color = mat.base_color;
-                    mat.base_color = base_color.with_alpha(target_alpha);
-                    mat.alpha_mode = target_alpha_mode;
-                }
-            }
-            if let Ok(grandchildren) = children_query.get(child) {
-                stack.extend(grandchildren.iter());
-            }
-        }
+        let base_scale = building_tf.scale.x; // uniform scale was set at spawn
+        let y_scale = base_scale * (0.05 + progress * 0.95);
+        building_tf.scale.y = y_scale;
     }
 }
 
