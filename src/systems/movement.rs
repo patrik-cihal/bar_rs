@@ -1,0 +1,224 @@
+use bevy::prelude::*;
+
+use crate::types::*;
+
+// --- Movement ---
+
+pub fn unit_movement(
+    mut commands: Commands,
+    mut units: Query<(Entity, &mut Transform, &Unit, Option<&MoveTarget>, Option<&AttackTarget>, Option<&ReclaimTarget>, Option<&BuildTarget>)>,
+    wreck_positions: Query<&Transform, (With<Wreckage>, Without<Unit>)>,
+    feat_positions: Query<&Transform, (With<MapFeature>, Without<Unit>, Without<Wreckage>)>,
+    time: Res<Time>,
+) {
+    let dt = time.delta_secs();
+
+    let positions: Vec<(Entity, Vec2)> = units
+        .iter()
+        .map(|(e, tf, _, _, _, _, _)| (e, game_xy(&tf.translation)))
+        .collect();
+
+    let pos_map: std::collections::HashMap<Entity, Vec2> =
+        positions.into_iter().collect();
+
+    let mut moves: Vec<(Entity, Vec2)> = Vec::new();
+    let mut remove_move_target: Vec<Entity> = Vec::new();
+
+    for (entity, transform, unit, move_target, attack_target, reclaim_target, build_target) in &units {
+        if unit.speed == 0.0 {
+            continue;
+        }
+
+        let pos = game_xy(&transform.translation);
+
+        if let Some(BuildTarget(target_entity)) = build_target {
+            // Move toward building but stop at BUILD_RANGE
+            if let Some(&tpos) = pos_map.get(target_entity) {
+                if pos.distance(tpos) > BUILD_RANGE * 0.9 {
+                    let direction = (tpos - pos).normalize_or_zero();
+                    moves.push((entity, direction * unit.speed * dt));
+                }
+            } else {
+                // Building no longer exists
+                remove_move_target.push(entity);
+            }
+        } else if let Some(AttackTarget(target_entity)) = attack_target {
+            if let Some(&tpos) = pos_map.get(target_entity) {
+                if pos.distance(tpos) > unit.attack_range * 0.9 {
+                    let direction = (tpos - pos).normalize_or_zero();
+                    moves.push((entity, direction * unit.speed * dt));
+                }
+            } else {
+                remove_move_target.push(entity);
+            }
+        } else if let Some(ReclaimTarget(target_entity)) = reclaim_target {
+            let target_pos = wreck_positions
+                .get(*target_entity)
+                .map(|tf| game_xy(&tf.translation))
+                .or_else(|_| feat_positions.get(*target_entity).map(|tf| game_xy(&tf.translation)));
+            if let Ok(tpos) = target_pos {
+                if pos.distance(tpos) > RECLAIM_RANGE {
+                    let direction = (tpos - pos).normalize_or_zero();
+                    moves.push((entity, direction * unit.speed * dt));
+                }
+            } else {
+                remove_move_target.push(entity);
+            }
+        } else if let Some(MoveTarget(target)) = move_target {
+            if pos.distance(*target) > 5.0 {
+                let direction = (*target - pos).normalize_or_zero();
+                moves.push((entity, direction * unit.speed * dt));
+            } else {
+                remove_move_target.push(entity);
+            }
+        }
+    }
+
+    for (entity, movement) in moves {
+        if let Ok((_, mut transform, _, _, _, _, _)) = units.get_mut(entity) {
+            transform.translation.x += movement.x;
+            transform.translation.z -= movement.y; // game +Y = world -Z
+        }
+    }
+
+    for entity in remove_move_target {
+        commands.entity(entity).remove::<MoveTarget>();
+        commands.entity(entity).remove::<BuildTarget>();
+    }
+}
+
+pub fn building_construction(
+    mut commands: Commands,
+    mut buildings: Query<(Entity, &mut Building, &Transform, Option<&MeshMaterial3d<StandardMaterial>>)>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    commanders: Query<(Entity, &Transform, Option<&BuildTarget>), (With<Commander>, With<PlayerOwned>, Without<Building>)>,
+    children_query: Query<&Children>,
+    descendant_materials: Query<&MeshMaterial3d<StandardMaterial>, Without<Building>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    time: Res<Time>,
+) {
+    let dt = time.delta_secs();
+
+    for (building_entity, mut building, building_tf, mat_handle) in &mut buildings {
+        if building.built {
+            continue;
+        }
+
+        let building_pos = game_xy(&building_tf.translation);
+
+        // Check if any commander with BuildTarget pointing to this building is in range
+        let mut builder_pos: Option<Vec2> = None;
+        let mut builder_entity: Option<Entity> = None;
+        for (cmd_entity, cmd_tf, build_target) in &commanders {
+            if let Some(BuildTarget(target)) = build_target {
+                if *target == building_entity {
+                    let cmd_pos = game_xy(&cmd_tf.translation);
+                    if cmd_pos.distance(building_pos) < BUILD_RANGE {
+                        builder_pos = Some(cmd_pos);
+                        builder_entity = Some(cmd_entity);
+                        break;
+                    }
+                }
+            }
+        }
+
+        if let Some(cmd_pos) = builder_pos {
+            building.build_progress += dt;
+
+            if building.build_progress >= building.build_time {
+                building.built = true;
+                if let Some(cmd_entity) = builder_entity {
+                    commands.entity(cmd_entity).remove::<BuildTarget>();
+                }
+            }
+
+            // Spawn nano particles from commander to building (~8 per second)
+            let t = time.elapsed_secs();
+            let spawn_interval = 0.12;
+            let phase = (t / spawn_interval) as u32;
+            if (t % spawn_interval) < dt {
+                let cmd_world = game_pos(cmd_pos.x, cmd_pos.y, 3.0);
+                let bld_world = game_pos(building_pos.x, building_pos.y, 2.0);
+                let offset = Vec3::new(
+                    (phase as f32 * 37.0).sin() * 3.0,
+                    (phase as f32 * 53.0).cos() * 2.0,
+                    (phase as f32 * 71.0).sin() * 3.0,
+                );
+                commands.spawn((
+                    Mesh3d(meshes.add(Sphere::new(1.2))),
+                    MeshMaterial3d(materials.add(StandardMaterial {
+                        base_color: Color::srgba(0.3, 1.0, 0.5, 0.8),
+                        emissive: LinearRgba::new(0.5, 2.0, 0.8, 1.0),
+                        alpha_mode: AlphaMode::Blend,
+                        unlit: true,
+                        ..default()
+                    })),
+                    Transform::from_translation(cmd_world + offset),
+                    NanoParticle {
+                        target: bld_world,
+                        speed: 200.0,
+                        lifetime: 2.0,
+                    },
+                ));
+            }
+        }
+
+        // Always update opacity based on build progress (even when builder not present)
+        let progress = (building.build_progress / building.build_time).min(1.0);
+        let target_alpha = if building.built { 1.0 } else { 0.3 + progress * 0.7 };
+        let target_alpha_mode = if building.built { AlphaMode::Opaque } else { AlphaMode::Blend };
+
+        // Update alpha on fallback mesh buildings (direct MeshMaterial3d)
+        if let Some(mat_handle) = mat_handle {
+            if let Some(mat) = materials.get_mut(mat_handle) {
+                let base_color = mat.base_color;
+                mat.base_color = base_color.with_alpha(target_alpha);
+                mat.alpha_mode = target_alpha_mode;
+            }
+        }
+
+        // Update alpha on SceneRoot building descendants
+        let mut stack: Vec<Entity> = Vec::new();
+        if let Ok(children) = children_query.get(building_entity) {
+            stack.extend(children.iter());
+        }
+        while let Some(child) = stack.pop() {
+            if let Ok(mat_handle) = descendant_materials.get(child) {
+                if let Some(mat) = materials.get_mut(mat_handle) {
+                    let base_color = mat.base_color;
+                    mat.base_color = base_color.with_alpha(target_alpha);
+                    mat.alpha_mode = target_alpha_mode;
+                }
+            }
+            if let Ok(grandchildren) = children_query.get(child) {
+                stack.extend(grandchildren.iter());
+            }
+        }
+    }
+}
+
+pub fn nano_particle_system(
+    mut commands: Commands,
+    mut particles: Query<(Entity, &mut Transform, &mut NanoParticle)>,
+    time: Res<Time>,
+) {
+    let dt = time.delta_secs();
+
+    for (entity, mut tf, mut particle) in &mut particles {
+        particle.lifetime -= dt;
+        if particle.lifetime <= 0.0 {
+            commands.entity(entity).despawn();
+            continue;
+        }
+
+        let direction = (particle.target - tf.translation).normalize_or_zero();
+        let dist = tf.translation.distance(particle.target);
+        let move_dist = particle.speed * dt;
+
+        if dist <= move_dist + 1.0 {
+            commands.entity(entity).despawn();
+        } else {
+            tf.translation += direction * move_dist;
+        }
+    }
+}
