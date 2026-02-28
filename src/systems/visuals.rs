@@ -130,7 +130,15 @@ pub fn build_ghost_system(
             && (pos.y - half.y) < (b_pos.y + b_half.y)
             && (pos.y + half.y) > (b_pos.y - b_half.y)
     });
-    let can_place = flat_enough && !overlaps_building;
+    // Extractors can only be placed on metal spots
+    let on_metal_spot = if btype == BuildingType::MetalExtractor {
+        metal_spots.iter().any(|spot_tf| {
+            game_xy(&spot_tf.translation).distance(pos) < EXTRACTOR_SNAP_RANGE
+        })
+    } else {
+        true
+    };
+    let can_place = flat_enough && !overlaps_building && on_metal_spot;
 
     // Update ghost color: green = valid, red = invalid
     if let Some(mat) = std_materials.get_mut(mat_handle) {

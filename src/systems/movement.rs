@@ -105,14 +105,14 @@ pub fn building_construction(
         let building_pos = game_xy(&building_tf.translation);
 
         // Check if any commander with BuildTarget pointing to this building is in range
-        let mut builder_pos: Option<Vec2> = None;
+        let mut builder_world_pos: Option<Vec3> = None;
         let mut builder_entity: Option<Entity> = None;
         for (cmd_entity, cmd_tf, build_target) in &commanders {
             if let Some(BuildTarget(target)) = build_target {
                 if *target == building_entity {
                     let cmd_pos = game_xy(&cmd_tf.translation);
                     if cmd_pos.distance(building_pos) < BUILD_RANGE {
-                        builder_pos = Some(cmd_pos);
+                        builder_world_pos = Some(cmd_tf.translation);
                         builder_entity = Some(cmd_entity);
                         break;
                     }
@@ -120,7 +120,7 @@ pub fn building_construction(
             }
         }
 
-        if let Some(cmd_pos) = builder_pos {
+        if let Some(cmd_world_pos) = builder_world_pos {
             building.build_progress += dt;
 
             if building.build_progress >= building.build_time {
@@ -135,8 +135,8 @@ pub fn building_construction(
             let spawn_interval = 0.12;
             let phase = (t / spawn_interval) as u32;
             if (t % spawn_interval) < dt {
-                let cmd_world = game_pos(cmd_pos.x, cmd_pos.y, 3.0);
-                let bld_world = game_pos(building_pos.x, building_pos.y, 2.0);
+                let cmd_world = cmd_world_pos + Vec3::new(0.0, 3.0, 0.0);
+                let bld_world = building_tf.translation + Vec3::new(0.0, 2.0, 0.0);
                 let offset = Vec3::new(
                     (phase as f32 * 37.0).sin() * 3.0,
                     (phase as f32 * 53.0).cos() * 2.0,

@@ -108,21 +108,9 @@ pub fn setup_map(
         Transform::IDENTITY,
     ));
 
-    // Metal spots
-    let metal_spots = vec![
-        Vec2::new(300.0, 300.0),
-        Vec2::new(500.0, 200.0),
-        Vec2::new(200.0, 600.0),
-        Vec2::new(700.0, 400.0),
-        Vec2::new(1000.0, 1000.0),
-        Vec2::new(1300.0, 1600.0),
-        Vec2::new(1500.0, 1400.0),
-        Vec2::new(1700.0, 1800.0),
-        Vec2::new(1800.0, 1500.0),
-        Vec2::new(1600.0, 1700.0),
-    ];
-
-    for pos in &metal_spots {
+    // Metal spots (from shared const, grid-aligned)
+    for &(mx, my) in &METAL_SPOT_POSITIONS {
+        let pos = &Vec2::new(mx, my);
         commands.spawn((
             Mesh3d(meshes.add(Cuboid::new(20.0, 2.0, 20.0))),
             MeshMaterial3d(materials.add(StandardMaterial {
@@ -205,32 +193,35 @@ pub fn setup_map(
         );
     }
 
-    // Enemy buildings
+    // Enemy buildings (snapped to build grid, extractor on a metal spot)
+    let enemy_ext_pos = snap_to_build_grid(Vec2::new(1800.0, 1800.0), BuildingType::MetalExtractor.stats().size);
     spawn_building_entity(
         &mut commands,
         &mut meshes,
         &mut materials,
-        Vec2::new(1700.0, 1800.0),
+        enemy_ext_pos,
         BuildingType::MetalExtractor,
         false,
         true,
         &model_library,
     );
+    let enemy_solar_pos = snap_to_build_grid(Vec2::new(1760.0, 1696.0), BuildingType::SolarCollector.stats().size);
     spawn_building_entity(
         &mut commands,
         &mut meshes,
         &mut materials,
-        Vec2::new(1800.0, 1700.0),
+        enemy_solar_pos,
         BuildingType::SolarCollector,
         false,
         true,
         &model_library,
     );
+    let enemy_fac_pos = snap_to_build_grid(Vec2::new(1600.0, 1696.0), BuildingType::Factory.stats().size);
     spawn_building_entity(
         &mut commands,
         &mut meshes,
         &mut materials,
-        Vec2::new(1600.0, 1700.0),
+        enemy_fac_pos,
         BuildingType::Factory,
         false,
         true,

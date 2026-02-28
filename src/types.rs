@@ -464,7 +464,27 @@ pub struct VehicleAnim;
 // --- Terrain ---
 
 pub const TERRAIN_GRID_SIZE: usize = 101; // 101x101 vertices for 2000x2000 map (~20 units per cell)
-pub const TERRAIN_MAX_HEIGHT: f32 = 30.0; // maximum hill height
+pub const TERRAIN_MAX_HEIGHT: f32 = 30.0; // maximum hill height (for color mapping)
+
+/// Grid-aligned metal spot positions. Each coordinate is snapped to the 16-unit
+/// build grid so that 32×32 extractors (2 grid cells) center perfectly.
+/// All spots are placed well inside flat terrain zones (plateau interiors,
+/// valley floor, or central mesa) — never on slopes or ridge edges.
+pub const METAL_SPOT_POSITIONS: [(f32, f32); 10] = [
+    // Player plateau (center 300,300 r=350; stay within ~150 of center)
+    (208.0, 208.0),
+    (400.0, 208.0),
+    (208.0, 400.0),
+    // Valley floor (between ridges, far from slopes)
+    (704.0, 608.0),
+    (1000.0, 1000.0), // central mesa center
+    (1296.0, 1392.0),
+    // Enemy plateau (center 1700,1700 r=350; stay within ~150 of center)
+    (1600.0, 1800.0),
+    (1800.0, 1600.0),
+    (1696.0, 1696.0),
+    (1800.0, 1800.0),
+];
 
 /// Simple hash-based noise for terrain generation (no external crate needed)
 fn hash_noise(x: f32, y: f32) -> f32 {
@@ -501,7 +521,7 @@ fn terrain_noise(x: f32, y: f32) -> f32 {
     let mut frequency = 1.0;
     let mut max_amp = 0.0;
 
-    for _ in 0..3 {
+    for _ in 0..2 {
         value += hash_noise(x * frequency, y * frequency) * amplitude;
         max_amp += amplitude;
         amplitude *= 0.5;
@@ -522,72 +542,89 @@ impl TerrainHeightmap {
         let cell_size = MAP_SIZE / (TERRAIN_GRID_SIZE - 1) as f32;
         let mut heights = vec![0.0; TERRAIN_GRID_SIZE * TERRAIN_GRID_SIZE];
 
+        // Smoothstep helper: 0 at edge, 1 at center
+        let smoothstep = |t: f32| -> f32 {
+            let t = t.clamp(0.0, 1.0);
+            t * t * (3.0 - 2.0 * t)
+        };
+
+        // Distance from point to line segment (px,py) -> (ax,ay)-(bx,by)
+        let dist_to_segment = |px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f32| -> f32 {
+            let dx = bx - ax;
+            let dy = by - ay;
+            let len_sq = dx * dx + dy * dy;
+            if len_sq < 0.001 {
+                return ((px - ax).powi(2) + (py - ay).powi(2)).sqrt();
+            }
+            let t = ((px - ax) * dx + (py - ay) * dy) / len_sq;
+            let t = t.clamp(0.0, 1.0);
+            let cx = ax + t * dx;
+            let cy = ay + t * dy;
+            ((px - cx).powi(2) + (py - cy).powi(2)).sqrt()
+        };
+
         for gy in 0..TERRAIN_GRID_SIZE {
             for gx in 0..TERRAIN_GRID_SIZE {
                 let wx = gx as f32 * cell_size;
                 let wy = gy as f32 * cell_size;
 
-                // Base terrain noise (scale controls feature size)
+                // --- Valley floor (base height) ---
+                let mut h: f32 = 2.0;
+
+                // --- Player base plateau: center (300,300), radius 350, height 12 ---
+                let player_dist = ((wx - 300.0).powi(2) + (wy - 300.0).powi(2)).sqrt();
+                let player_t = 1.0 - smoothstep(player_dist / 350.0);
+                h = h.max(h + player_t * 10.0); // raises to ~12
+
+                // --- Enemy base plateau: center (1700,1700), radius 350, height 12 ---
+                let enemy_dist = ((wx - 1700.0).powi(2) + (wy - 1700.0).powi(2)).sqrt();
+                let enemy_t = 1.0 - smoothstep(enemy_dist / 350.0);
+                h = h.max(h + enemy_t * 10.0);
+
+                // --- NW ridge: line from (0,900) to (900,0), height ~24, width ~250 ---
+                let nw_dist = dist_to_segment(wx, wy, 0.0, 900.0, 900.0, 0.0);
+                let nw_t = 1.0 - smoothstep(nw_dist / 250.0);
+                h = h.max(2.0 + nw_t * 22.0);
+
+                // --- SE ridge: line from (1100,2000) to (2000,1100), height ~24, width ~250 ---
+                let se_dist = dist_to_segment(wx, wy, 1100.0, 2000.0, 2000.0, 1100.0);
+                let se_t = 1.0 - smoothstep(se_dist / 250.0);
+                h = h.max(2.0 + se_t * 22.0);
+
+                // --- Central mesa: center (1000,1000), radius 150, height ~8 ---
+                let center_dist = ((wx - 1000.0).powi(2) + (wy - 1000.0).powi(2)).sqrt();
+                let center_t = 1.0 - smoothstep(center_dist / 150.0);
+                h = h.max(2.0 + center_t * 6.0);
+
+                // --- Noise overlay: 2 octaves, amplitude 4 (surface texture) ---
                 let noise_scale = 0.008;
-                let h = terrain_noise(wx * noise_scale + 3.7, wy * noise_scale + 7.1);
+                let noise = terrain_noise(wx * noise_scale + 3.7, wy * noise_scale + 7.1);
+                h += noise * 4.0;
 
-                // Flatten near map edges
+                // --- Edge falloff: flatten within 100 units of map edges ---
                 let edge_margin = 100.0;
-                let ex = ((wx.min(MAP_SIZE - wx)) / edge_margin).min(1.0);
-                let ey = ((wy.min(MAP_SIZE - wy)) / edge_margin).min(1.0);
-                let edge_factor = ex * ey;
+                let ex = (wx.min(MAP_SIZE - wx) / edge_margin).min(1.0);
+                let ey = (wy.min(MAP_SIZE - wy) / edge_margin).min(1.0);
+                let edge_factor = smoothstep(ex) * smoothstep(ey);
+                h = h * edge_factor;
 
-                // Flatten near player start (200,200) and enemy start (1800,1800)
-                let player_dist = ((wx - 200.0).powi(2) + (wy - 200.0).powi(2)).sqrt();
-                let enemy_dist = ((wx - 1800.0).powi(2) + (wy - 1800.0).powi(2)).sqrt();
-                let start_radius = 250.0;
-                let player_flat = (player_dist / start_radius).min(1.0).powi(2);
-                let enemy_flat = (enemy_dist / start_radius).min(1.0).powi(2);
-                let start_factor = player_flat.min(1.0) * enemy_flat.min(1.0);
-
-                heights[gy * TERRAIN_GRID_SIZE + gx] = h * TERRAIN_MAX_HEIGHT * edge_factor * start_factor;
-            }
-        }
-
-        // Helper: flatten a circular area around (px, py) with given radius
-        let flatten_area = |heights: &mut Vec<f32>, px: f32, py: f32, radius: f32| {
-            let gx_center = (px / cell_size).round() as usize;
-            let gy_center = (py / cell_size).round() as usize;
-            let gx_center = gx_center.min(TERRAIN_GRID_SIZE - 1);
-            let gy_center = gy_center.min(TERRAIN_GRID_SIZE - 1);
-            let plateau_height = heights[gy_center * TERRAIN_GRID_SIZE + gx_center];
-
-            let grid_radius = (radius / cell_size).ceil() as i32 + 1;
-            let gx_i = gx_center as i32;
-            let gy_i = gy_center as i32;
-            for dy in -grid_radius..=grid_radius {
-                for dx in -grid_radius..=grid_radius {
-                    let gx = (gx_i + dx) as usize;
-                    let gy = (gy_i + dy) as usize;
-                    if gx >= TERRAIN_GRID_SIZE || gy >= TERRAIN_GRID_SIZE {
-                        continue;
-                    }
-                    let wx = gx as f32 * cell_size;
-                    let wy = gy as f32 * cell_size;
-                    let dist = ((wx - px).powi(2) + (wy - py).powi(2)).sqrt();
-                    if dist < radius {
-                        let t = (dist / radius).clamp(0.0, 1.0);
-                        let blend = t * t * (3.0 - 2.0 * t); // smoothstep
-                        let idx = gy * TERRAIN_GRID_SIZE + gx;
-                        heights[idx] = plateau_height * (1.0 - blend) + heights[idx] * blend;
-                    }
+                // --- Spawn area flatten: 250 radius around (200,200) and (1800,1800) ---
+                let spawn_player = ((wx - 200.0).powi(2) + (wy - 200.0).powi(2)).sqrt();
+                let spawn_enemy = ((wx - 1800.0).powi(2) + (wy - 1800.0).powi(2)).sqrt();
+                let spawn_radius = 250.0;
+                // Inside spawn radius: lerp toward plateau height (12)
+                let plateau_h = 12.0;
+                if spawn_player < spawn_radius {
+                    let t = smoothstep(spawn_player / spawn_radius);
+                    h = plateau_h * (1.0 - t) + h * t;
                 }
-            }
-        };
+                if spawn_enemy < spawn_radius {
+                    let t = smoothstep(spawn_enemy / spawn_radius);
+                    h = plateau_h * (1.0 - t) + h * t;
+                }
 
-        // Flatten around every metal spot so extractors are always placeable
-        let metal_spot_positions = [
-            (300.0, 300.0), (500.0, 200.0), (200.0, 600.0), (700.0, 400.0),
-            (1000.0, 1000.0), (1300.0, 1600.0), (1500.0, 1400.0),
-            (1700.0, 1800.0), (1800.0, 1500.0), (1600.0, 1700.0),
-        ];
-        for (mx, my) in metal_spot_positions {
-            flatten_area(&mut heights, mx, my, 40.0);
+                heights[gy * TERRAIN_GRID_SIZE + gx] = h;
+            }
         }
 
         TerrainHeightmap { heights, cell_size }
