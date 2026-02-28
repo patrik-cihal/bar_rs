@@ -389,6 +389,9 @@ pub struct DeathExplosion {
 #[derive(Component)]
 pub struct MinimapFrame;
 
+#[derive(Component)]
+pub struct FogOverlay;
+
 // --- Resources ---
 
 #[derive(Resource)]
@@ -465,6 +468,7 @@ pub struct VehicleAnim;
 
 pub const TERRAIN_GRID_SIZE: usize = 101; // 101x101 vertices for 2000x2000 map (~20 units per cell)
 pub const TERRAIN_MAX_HEIGHT: f32 = 30.0; // maximum hill height (for color mapping)
+pub const FOG_GRID_SIZE: usize = 51; // coarser grid for fog overlay (performance)
 
 /// Grid-aligned metal spot positions. Each coordinate is snapped to the 16-unit
 /// build grid so that 32×32 extractors (2 grid cells) center perfectly.

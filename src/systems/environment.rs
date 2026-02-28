@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy::mesh::VertexAttributeValues;
 
 use crate::types::*;
 
@@ -150,4 +151,76 @@ pub fn fog_of_war_system(
             *vis = Visibility::Hidden;
         }
     }
+}
+
+// --- Fog Overlay Visualization ---
+
+pub fn fog_overlay_system(
+    player_units: Query<(&Transform, &SightRange), With<PlayerOwned>>,
+    player_radars: Query<(&Transform, &RadarRangeComp, &Building), With<PlayerOwned>>,
+    fog_query: Query<&Mesh3d, With<FogOverlay>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+) {
+    let Ok(mesh_handle) = fog_query.single() else {
+        return;
+    };
+    let Some(mesh) = meshes.get_mut(&mesh_handle.0) else {
+        return;
+    };
+
+    let gs = FOG_GRID_SIZE;
+    let cell_size = MAP_SIZE / (gs - 1) as f32;
+
+    // Collect player vision sources
+    let sight_sources: Vec<(Vec2, f32)> = player_units
+        .iter()
+        .map(|(tf, sr)| (game_xy(&tf.translation), sr.0))
+        .collect();
+
+    let radar_sources: Vec<(Vec2, f32)> = player_radars
+        .iter()
+        .filter(|(_, _, b)| b.built)
+        .map(|(tf, rr, _)| (game_xy(&tf.translation), rr.0))
+        .collect();
+
+    // Build new vertex colors
+    let mut colors = Vec::with_capacity(gs * gs);
+    for gy in 0..gs {
+        for gx in 0..gs {
+            let wx = gx as f32 * cell_size;
+            let wy = gy as f32 * cell_size;
+            let pos = Vec2::new(wx, wy);
+
+            let mut alpha = 0.7_f32; // full fog
+
+            // Check sight ranges — fully clear
+            for &(src, range) in &sight_sources {
+                let dist = src.distance(pos);
+                if dist < range {
+                    // Smooth edge: fade from 0 alpha at center to fog at range
+                    let edge_width = 60.0;
+                    let fade = ((range - dist) / edge_width).min(1.0);
+                    alpha = alpha.min(0.7 * (1.0 - fade));
+                }
+            }
+
+            // Check radar ranges — partial clear (dimmer fog)
+            for &(src, range) in &radar_sources {
+                let dist = src.distance(pos);
+                if dist < range {
+                    let edge_width = 80.0;
+                    let fade = ((range - dist) / edge_width).min(1.0);
+                    let radar_alpha = 0.7 * (1.0 - fade * 0.5); // radar only halves the fog
+                    alpha = alpha.min(radar_alpha);
+                }
+            }
+
+            colors.push([0.0_f32, 0.0, 0.0, alpha]);
+        }
+    }
+
+    mesh.insert_attribute(
+        Mesh::ATTRIBUTE_COLOR,
+        VertexAttributeValues::Float32x4(colors),
+    );
 }

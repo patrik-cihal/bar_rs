@@ -108,6 +108,20 @@ pub fn setup_map(
         Transform::IDENTITY,
     ));
 
+    // Fog of war overlay mesh — sits just above terrain, vertex alpha driven by sight
+    let fog_mesh = build_fog_mesh(&terrain);
+    commands.spawn((
+        Mesh3d(meshes.add(fog_mesh)),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::WHITE, // vertex colors provide the actual color+alpha
+            alpha_mode: AlphaMode::Blend,
+            unlit: true,
+            ..default()
+        })),
+        Transform::IDENTITY,
+        FogOverlay,
+    ));
+
     // Metal spots (from shared const, grid-aligned)
     for &(mx, my) in &METAL_SPOT_POSITIONS {
         let pos = &Vec2::new(mx, my);
@@ -398,6 +412,55 @@ fn build_terrain_mesh(terrain: &TerrainHeightmap) -> Mesh {
             indices.push(i + 1);
             indices.push(i + row);
 
+            indices.push(i + 1);
+            indices.push(i + row + 1);
+            indices.push(i + row);
+        }
+    }
+
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, default());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, VertexAttributeValues::Float32x4(colors));
+    mesh.insert_indices(Indices::U32(indices));
+    mesh
+}
+
+/// Build the fog of war overlay mesh. Same grid as terrain but offset slightly
+/// above. Starts fully dark (alpha=0.7); the fog_overlay_system clears areas
+/// around player units each frame.
+pub fn build_fog_mesh(terrain: &TerrainHeightmap) -> Mesh {
+    let gs = FOG_GRID_SIZE;
+    let cell_size = MAP_SIZE / (gs - 1) as f32;
+    let num_verts = gs * gs;
+    let mut positions = Vec::with_capacity(num_verts);
+    let mut normals = Vec::with_capacity(num_verts);
+    let mut colors = Vec::with_capacity(num_verts);
+    let mut uvs = Vec::with_capacity(num_verts);
+
+    for gy in 0..gs {
+        for gx in 0..gs {
+            let wx = gx as f32 * cell_size;
+            let wy = gy as f32 * cell_size;
+            let h = terrain.height_at(wx, wy) + 0.5; // slightly above terrain
+            positions.push([wx, h, -wy]);
+            normals.push([0.0, 1.0, 0.0]);
+            uvs.push([gx as f32 / (gs - 1) as f32, gy as f32 / (gs - 1) as f32]);
+            // Dark fog, starts opaque
+            colors.push([0.0_f32, 0.0, 0.0, 0.7]);
+        }
+    }
+
+    let num_quads = (gs - 1) * (gs - 1);
+    let mut indices = Vec::with_capacity(num_quads * 6);
+    for gy in 0..(gs - 1) {
+        for gx in 0..(gs - 1) {
+            let i = (gy * gs + gx) as u32;
+            let row = gs as u32;
+            indices.push(i);
+            indices.push(i + 1);
+            indices.push(i + row);
             indices.push(i + 1);
             indices.push(i + row + 1);
             indices.push(i + row);

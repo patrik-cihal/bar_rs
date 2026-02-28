@@ -67,6 +67,7 @@ fn main() {
                 unit_collision_system,
                 building_collision_system,
                 fog_of_war_system,
+                fog_overlay_system,
                 nano_particle_system,
             ),
         )
