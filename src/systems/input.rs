@@ -301,9 +301,11 @@ pub fn build_mode_input(
 pub fn building_placement(
     mouse: Res<ButtonInput<MouseButton>>,
     cursor_pos: Res<CursorWorldPos>,
+    terrain: Res<TerrainHeightmap>,
     mut build_mode: ResMut<BuildMode>,
     mut resources: ResMut<GameResources>,
     metal_spots: Query<&Transform, With<MetalSpot>>,
+    existing_buildings: Query<(&Transform, &Building), Without<MetalSpot>>,
     selected_commanders: Query<Entity, (With<Selected>, With<PlayerOwned>, With<Commander>)>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -341,6 +343,31 @@ pub fn building_placement(
             if !found_spot {
                 return;
             }
+        }
+
+        // Snap to build grid
+        place_pos = snap_to_build_grid(place_pos, bs.size);
+
+        let size = Vec2::new(bs.size.0, bs.size.1);
+
+        // Check terrain flatness
+        if !terrain.is_flat_enough(place_pos.x, place_pos.y, size.x, size.y) {
+            return;
+        }
+
+        // Check no overlap with existing buildings
+        let overlaps = existing_buildings.iter().any(|(b_tf, b)| {
+            let b_pos = game_xy(&b_tf.translation);
+            let b_stats = b.building_type.stats();
+            let b_half = Vec2::new(b_stats.size.0 * 0.5, b_stats.size.1 * 0.5);
+            let half = size * 0.5;
+            (place_pos.x - half.x) < (b_pos.x + b_half.x)
+                && (place_pos.x + half.x) > (b_pos.x - b_half.x)
+                && (place_pos.y - half.y) < (b_pos.y + b_half.y)
+                && (place_pos.y + half.y) > (b_pos.y - b_half.y)
+        });
+        if overlaps {
+            return;
         }
 
         resources.metal -= metal_cost;

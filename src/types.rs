@@ -14,6 +14,20 @@ pub fn game_xy(pos: &Vec3) -> Vec2 {
     Vec2::new(pos.x, -pos.z)
 }
 
+/// Snap a building center to the build grid. Buildings with an even number of
+/// grid cells have their center between grid lines (offset by half grid).
+pub fn snap_to_build_grid(pos: Vec2, size: (f32, f32)) -> Vec2 {
+    let grid = BUILD_GRID_SIZE;
+    let cells_x = (size.0 / grid).ceil() as i32;
+    let cells_y = (size.1 / grid).ceil() as i32;
+    let offset_x = if cells_x % 2 == 0 { 0.0 } else { grid * 0.5 };
+    let offset_y = if cells_y % 2 == 0 { 0.0 } else { grid * 0.5 };
+    Vec2::new(
+        ((pos.x - offset_x) / grid).round() * grid + offset_x,
+        ((pos.y - offset_y) / grid).round() * grid + offset_y,
+    )
+}
+
 // --- Constants ---
 pub const MAP_SIZE: f32 = 2000.0;
 pub const CAMERA_SPEED: f32 = 500.0;
@@ -33,6 +47,7 @@ pub const PROJECTILE_SPEED: f32 = 400.0;
 pub const PROJECTILE_SIZE: f32 = 4.0;
 pub const MINIMAP_SIZE: f32 = 180.0;
 pub const EXTRACTOR_SNAP_RANGE: f32 = 50.0;
+pub const BUILD_GRID_SIZE: f32 = 16.0;
 pub const EXTRACTOR_INCOME: f32 = 2.0;
 pub const SOLAR_INCOME: f32 = 10.0;
 pub const RADAR_RANGE: f32 = 600.0;
@@ -128,7 +143,7 @@ pub struct BuildingStats {
 
 const EXTRACTOR_STATS: BuildingStats = BuildingStats {
     metal_cost: 60.0, energy_cost: 0.0, build_time: 3.0,
-    size: (30.0, 30.0), hp: 300.0,
+    size: (32.0, 32.0), hp: 300.0,
     attack_damage: 0.0, attack_range: 0.0, attack_cooldown: 999.0,
     sight_range: 200.0,
     model_file: "armmex", model_scale: 0.5,
@@ -136,7 +151,7 @@ const EXTRACTOR_STATS: BuildingStats = BuildingStats {
 
 const SOLAR_STATS: BuildingStats = BuildingStats {
     metal_cost: 20.0, energy_cost: 0.0, build_time: 2.0,
-    size: (35.0, 35.0), hp: 300.0,
+    size: (32.0, 32.0), hp: 300.0,
     attack_damage: 0.0, attack_range: 0.0, attack_cooldown: 999.0,
     sight_range: 200.0,
     model_file: "armsolar", model_scale: 0.5,
@@ -144,7 +159,7 @@ const SOLAR_STATS: BuildingStats = BuildingStats {
 
 const FACTORY_STATS: BuildingStats = BuildingStats {
     metal_cost: 200.0, energy_cost: 200.0, build_time: 8.0,
-    size: (50.0, 50.0), hp: 300.0,
+    size: (48.0, 48.0), hp: 300.0,
     attack_damage: 0.0, attack_range: 0.0, attack_cooldown: 999.0,
     sight_range: 200.0,
     model_file: "armlab", model_scale: 0.5,
@@ -152,7 +167,7 @@ const FACTORY_STATS: BuildingStats = BuildingStats {
 
 const LLT_STATS: BuildingStats = BuildingStats {
     metal_cost: 60.0, energy_cost: 0.0, build_time: 4.0,
-    size: (25.0, 25.0), hp: 400.0,
+    size: (32.0, 32.0), hp: 400.0,
     attack_damage: 25.0, attack_range: 250.0, attack_cooldown: 0.6,
     sight_range: 200.0,
     model_file: "armllt", model_scale: 0.5,
@@ -168,7 +183,7 @@ const WALL_STATS: BuildingStats = BuildingStats {
 
 const RADAR_STATS: BuildingStats = BuildingStats {
     metal_cost: 50.0, energy_cost: 30.0, build_time: 5.0,
-    size: (28.0, 28.0), hp: 200.0,
+    size: (32.0, 32.0), hp: 200.0,
     attack_damage: 0.0, attack_range: 0.0, attack_cooldown: 999.0,
     sight_range: 200.0,
     model_file: "armrad", model_scale: 0.5,
@@ -449,7 +464,7 @@ pub struct VehicleAnim;
 // --- Terrain ---
 
 pub const TERRAIN_GRID_SIZE: usize = 101; // 101x101 vertices for 2000x2000 map (~20 units per cell)
-pub const TERRAIN_MAX_HEIGHT: f32 = 50.0; // maximum hill height
+pub const TERRAIN_MAX_HEIGHT: f32 = 30.0; // maximum hill height
 
 /// Simple hash-based noise for terrain generation (no external crate needed)
 fn hash_noise(x: f32, y: f32) -> f32 {
@@ -486,7 +501,7 @@ fn terrain_noise(x: f32, y: f32) -> f32 {
     let mut frequency = 1.0;
     let mut max_amp = 0.0;
 
-    for _ in 0..4 {
+    for _ in 0..3 {
         value += hash_noise(x * frequency, y * frequency) * amplitude;
         max_amp += amplitude;
         amplitude *= 0.5;
@@ -534,6 +549,47 @@ impl TerrainHeightmap {
             }
         }
 
+        // Helper: flatten a circular area around (px, py) with given radius
+        let flatten_area = |heights: &mut Vec<f32>, px: f32, py: f32, radius: f32| {
+            let gx_center = (px / cell_size).round() as usize;
+            let gy_center = (py / cell_size).round() as usize;
+            let gx_center = gx_center.min(TERRAIN_GRID_SIZE - 1);
+            let gy_center = gy_center.min(TERRAIN_GRID_SIZE - 1);
+            let plateau_height = heights[gy_center * TERRAIN_GRID_SIZE + gx_center];
+
+            let grid_radius = (radius / cell_size).ceil() as i32 + 1;
+            let gx_i = gx_center as i32;
+            let gy_i = gy_center as i32;
+            for dy in -grid_radius..=grid_radius {
+                for dx in -grid_radius..=grid_radius {
+                    let gx = (gx_i + dx) as usize;
+                    let gy = (gy_i + dy) as usize;
+                    if gx >= TERRAIN_GRID_SIZE || gy >= TERRAIN_GRID_SIZE {
+                        continue;
+                    }
+                    let wx = gx as f32 * cell_size;
+                    let wy = gy as f32 * cell_size;
+                    let dist = ((wx - px).powi(2) + (wy - py).powi(2)).sqrt();
+                    if dist < radius {
+                        let t = (dist / radius).clamp(0.0, 1.0);
+                        let blend = t * t * (3.0 - 2.0 * t); // smoothstep
+                        let idx = gy * TERRAIN_GRID_SIZE + gx;
+                        heights[idx] = plateau_height * (1.0 - blend) + heights[idx] * blend;
+                    }
+                }
+            }
+        };
+
+        // Flatten around every metal spot so extractors are always placeable
+        let metal_spot_positions = [
+            (300.0, 300.0), (500.0, 200.0), (200.0, 600.0), (700.0, 400.0),
+            (1000.0, 1000.0), (1300.0, 1600.0), (1500.0, 1400.0),
+            (1700.0, 1800.0), (1800.0, 1500.0), (1600.0, 1700.0),
+        ];
+        for (mx, my) in metal_spot_positions {
+            flatten_area(&mut heights, mx, my, 40.0);
+        }
+
         TerrainHeightmap { heights, cell_size }
     }
 
@@ -560,5 +616,35 @@ impl TerrainHeightmap {
         let h0 = h00 + (h10 - h00) * fx;
         let h1 = h01 + (h11 - h01) * fx;
         h0 + (h1 - h0) * fy
+    }
+
+    /// Check if terrain is flat enough for building placement.
+    /// Checks every build grid cell the building covers; for each cell, samples
+    /// the 4 corners and rejects if max height diff exceeds threshold.
+    pub fn is_flat_enough(&self, x: f32, y: f32, size_x: f32, size_y: f32) -> bool {
+        let grid = BUILD_GRID_SIZE;
+        let half_x = size_x * 0.5;
+        let half_y = size_y * 0.5;
+        let start_x = x - half_x;
+        let start_y = y - half_y;
+        let cells_x = (size_x / grid).ceil() as i32;
+        let cells_y = (size_y / grid).ceil() as i32;
+
+        for cy in 0..cells_y {
+            for cx in 0..cells_x {
+                let cx0 = start_x + cx as f32 * grid;
+                let cy0 = start_y + cy as f32 * grid;
+                let h00 = self.height_at(cx0, cy0);
+                let h10 = self.height_at(cx0 + grid, cy0);
+                let h01 = self.height_at(cx0, cy0 + grid);
+                let h11 = self.height_at(cx0 + grid, cy0 + grid);
+                let min_h = h00.min(h10).min(h01).min(h11);
+                let max_h = h00.max(h10).max(h01).max(h11);
+                if (max_h - min_h) > 2.0 {
+                    return false;
+                }
+            }
+        }
+        true
     }
 }

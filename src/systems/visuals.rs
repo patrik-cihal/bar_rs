@@ -80,9 +80,11 @@ pub fn build_ghost_system(
     cursor_pos: Res<CursorWorldPos>,
     terrain: Res<TerrainHeightmap>,
     metal_spots: Query<&Transform, With<MetalSpot>>,
-    mut ghost_q: Query<(&mut Transform, &mut Visibility), (With<BuildGhost>, Without<MetalSpot>)>,
+    buildings: Query<(&Transform, &Building), Without<BuildGhost>>,
+    mut ghost_q: Query<(&mut Transform, &mut Visibility, &MeshMaterial3d<StandardMaterial>), (With<BuildGhost>, Without<MetalSpot>, Without<Building>)>,
+    mut std_materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let Ok((mut tf, mut vis)) = ghost_q.single_mut() else {
+    let Ok((mut tf, mut vis, mat_handle)) = ghost_q.single_mut() else {
         return;
     };
 
@@ -111,6 +113,33 @@ pub fn build_ghost_system(
 
     let bs = btype.stats();
     let size = Vec2::new(bs.size.0, bs.size.1);
+
+    // Snap to build grid
+    pos = snap_to_build_grid(pos, bs.size);
+
+    // Check if placement is valid: terrain flatness + no building overlap
+    let flat_enough = terrain.is_flat_enough(pos.x, pos.y, size.x, size.y);
+    let overlaps_building = buildings.iter().any(|(b_tf, b)| {
+        let b_pos = game_xy(&b_tf.translation);
+        let b_stats = b.building_type.stats();
+        let b_half = Vec2::new(b_stats.size.0 * 0.5, b_stats.size.1 * 0.5);
+        let half = size * 0.5;
+        // AABB overlap check
+        (pos.x - half.x) < (b_pos.x + b_half.x)
+            && (pos.x + half.x) > (b_pos.x - b_half.x)
+            && (pos.y - half.y) < (b_pos.y + b_half.y)
+            && (pos.y + half.y) > (b_pos.y - b_half.y)
+    });
+    let can_place = flat_enough && !overlaps_building;
+
+    // Update ghost color: green = valid, red = invalid
+    if let Some(mat) = std_materials.get_mut(mat_handle) {
+        mat.base_color = if can_place {
+            Color::srgba(0.5, 1.0, 0.5, 0.4)
+        } else {
+            Color::srgba(1.0, 0.3, 0.3, 0.4)
+        };
+    }
 
     let world_pos = game_pos(pos.x, pos.y, terrain.height_at(pos.x, pos.y) + 0.5);
     tf.translation = world_pos;
