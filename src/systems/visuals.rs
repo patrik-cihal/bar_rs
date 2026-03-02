@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 
+use crate::networking::NetRole;
 use crate::types::*;
 
 // --- Visual Effects ---
@@ -157,17 +158,20 @@ pub fn build_ghost_system(
 // --- HUD ---
 
 pub fn hud_system(
-    resources: Res<GameResources>,
+    all_resources: Res<AllTeamResources>,
+    local_player: Res<LocalPlayer>,
     build_mode: Res<BuildMode>,
     dgun_mode: Res<DGunMode>,
     mut metal_text: Query<&mut Text, (With<HudMetal>, Without<HudEnergy>, Without<HudBuildHint>, Without<HudFactoryQueue>)>,
     mut energy_text: Query<&mut Text, (With<HudEnergy>, Without<HudMetal>, Without<HudBuildHint>, Without<HudFactoryQueue>)>,
     mut hint_text: Query<&mut Text, (With<HudBuildHint>, Without<HudMetal>, Without<HudEnergy>, Without<HudFactoryQueue>)>,
     mut queue_text: Query<&mut Text, (With<HudFactoryQueue>, Without<HudMetal>, Without<HudEnergy>, Without<HudBuildHint>)>,
-    selected_commanders: Query<(), (With<Selected>, With<Commander>, With<PlayerOwned>)>,
-    selected_factories: Query<&Factory, (With<Selected>, With<PlayerOwned>)>,
-    selected_non_cmd: Query<(), (With<Selected>, With<PlayerOwned>, With<Unit>, Without<Commander>, Without<Factory>)>,
+    selected_commanders: Query<&TeamOwned, (With<Selected>, With<Commander>)>,
+    selected_factories: Query<(&Factory, &TeamOwned), With<Selected>>,
+    selected_non_cmd: Query<&TeamOwned, (With<Selected>, With<Unit>, Without<Commander>, Without<Factory>)>,
 ) {
+    let resources = &all_resources.teams[local_player.id as usize];
+
     for mut text in &mut metal_text {
         **text = format!(
             "Metal: {:.0} (+{:.0}/s)",
@@ -181,6 +185,10 @@ pub fn hud_system(
         );
     }
     for mut text in &mut hint_text {
+        let has_local_commander = selected_commanders.iter().any(|t| t.0 == local_player.id);
+        let has_local_factory = selected_factories.iter().any(|(_, t)| t.0 == local_player.id);
+        let has_local_unit = selected_non_cmd.iter().any(|t| t.0 == local_player.id);
+
         if dgun_mode.0 {
             **text = "D-GUN MODE — Click to fire (500 energy) | Esc to cancel".to_string();
         } else if build_mode.active {
@@ -194,11 +202,11 @@ pub fn hud_system(
                 None => "???",
             };
             **text = format!("Placing: {} - Click to place, Esc to cancel", name);
-        } else if !selected_commanders.is_empty() {
+        } else if has_local_commander {
             **text = "[1]Ext [2]Solar [3]Fac [4]LLT [5]Wall [6]Radar [G]D-Gun | RClick: Move/Atk".to_string();
-        } else if !selected_factories.is_empty() {
+        } else if has_local_factory {
             **text = "[Q]Scout [W]Raider [E]Tank [R]Assault [T]Artillery | Shift+key: x5".to_string();
-        } else if !selected_non_cmd.is_empty() {
+        } else if has_local_unit {
             **text = "Right-click: Move/Attack".to_string();
         } else {
             **text = String::new();
@@ -207,8 +215,8 @@ pub fn hud_system(
 
     for mut text in &mut queue_text {
         let mut queue_str = String::new();
-        for factory in &selected_factories {
-            if !factory.queue.is_empty() {
+        for (factory, team) in &selected_factories {
+            if team.0 == local_player.id && !factory.queue.is_empty() {
                 queue_str = format!(
                     "Queue: {}",
                     factory
@@ -229,9 +237,9 @@ pub fn hud_system(
 
 pub fn minimap_system(
     _gizmos: Gizmos,
-    player_units: Query<&Transform, (With<Unit>, With<PlayerOwned>)>,
-    enemy_units: Query<(&Transform, &Visibility), (With<Unit>, With<EnemyOwned>)>,
-    player_buildings: Query<&Transform, (With<Building>, With<PlayerOwned>, Without<Unit>)>,
+    player_units: Query<(&Transform, &TeamOwned), With<Unit>>,
+    enemy_units: Query<(&Transform, &Visibility, &TeamOwned), With<Unit>>,
+    player_buildings: Query<(&Transform, &TeamOwned), (With<Building>, Without<Unit>)>,
     metal_spots: Query<&Transform, (With<MetalSpot>, Without<Unit>, Without<Building>)>,
     mouse: Res<ButtonInput<MouseButton>>,
     window_q: Query<&Window>,
@@ -258,8 +266,6 @@ pub fn minimap_system(
                 let world_y = rel_y * MAP_SIZE;
 
                 if let Ok(mut cam_tf) = camera_q.single_mut() {
-                    // Move camera to look at this world position
-                    // Keep the camera's relative offset (height + angle offset)
                     let pitch = 55.0_f32.to_radians();
                     let cam_dist = 500.0;
                     cam_tf.translation.x = world_x;
@@ -273,22 +279,70 @@ pub fn minimap_system(
     let _ = (player_units, enemy_units, player_buildings, metal_spots, _gizmos);
 }
 
+// --- Network Status HUD ---
+
+pub fn net_status_system(
+    net_role: Res<NetRole>,
+    command_buffer: Res<crate::networking::CommandBuffer>,
+    client: Option<Res<bevy_renet2::prelude::RenetClient>>,
+    mut text_query: Query<(&mut Text, &mut TextColor), With<HudNetStatus>>,
+) {
+    for (mut text, mut color) in &mut text_query {
+        match *net_role {
+            NetRole::Singleplayer => {
+                **text = String::new();
+            }
+            NetRole::Host { port } => {
+                let waiting = !command_buffer.has_commands_for_tick(command_buffer.current_tick);
+                if waiting {
+                    **text = format!("Hosting :{} | Waiting for player...", port);
+                    *color = TextColor(Color::srgb(1.0, 1.0, 0.3));
+                } else {
+                    **text = format!("Hosting :{} | Connected", port);
+                    *color = TextColor(Color::srgb(0.5, 1.0, 0.5));
+                }
+            }
+            NetRole::Client { addr } => {
+                let connected = client.as_ref().is_some_and(|c| c.is_connected());
+                let waiting = !command_buffer.has_commands_for_tick(command_buffer.current_tick);
+                if !connected {
+                    **text = format!("Connecting to {}...", addr);
+                    *color = TextColor(Color::srgb(1.0, 0.5, 0.3));
+                } else if waiting {
+                    **text = format!("Connected to {} | Waiting...", addr);
+                    *color = TextColor(Color::srgb(1.0, 1.0, 0.3));
+                } else {
+                    **text = format!("Connected to {}", addr);
+                    *color = TextColor(Color::srgb(0.5, 1.0, 0.5));
+                }
+            }
+        }
+    }
+}
+
 // --- Win/Lose ---
 
 pub fn win_lose_check(
     mut commands: Commands,
     mut game_over: ResMut<GameOver>,
-    player_commanders: Query<Entity, (With<Commander>, With<PlayerOwned>)>,
-    enemy_units: Query<Entity, (With<Unit>, With<EnemyOwned>)>,
+    local_player: Res<LocalPlayer>,
+    commanders: Query<(Entity, &TeamOwned), With<Commander>>,
+    all_units: Query<(Entity, &TeamOwned), With<Unit>>,
     existing_go_text: Query<Entity, With<GameOverText>>,
 ) {
     if game_over.0.is_some() {
         return;
     }
 
-    if player_commanders.is_empty() {
+    let local_team = local_player.id;
+    let enemy_team = 1 - local_team;
+
+    let local_commander_alive = commanders.iter().any(|(_, t)| t.0 == local_team);
+    let enemy_has_units = all_units.iter().any(|(_, t)| t.0 == enemy_team);
+
+    if !local_commander_alive {
         game_over.0 = Some("DEFEAT - Your commander has been destroyed!".to_string());
-    } else if enemy_units.is_empty() {
+    } else if !enemy_has_units {
         game_over.0 = Some("VICTORY - All enemy forces destroyed!".to_string());
     }
 

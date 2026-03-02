@@ -10,14 +10,15 @@ pub fn combat_system(
         Entity,
         &mut Unit,
         &Transform,
-        Option<&PlayerOwned>,
-        Option<&EnemyOwned>,
+        &TeamOwned,
         Option<&Commander>,
         Option<&Building>,
+        Option<&StableId>,
     )>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     terrain: Res<TerrainHeightmap>,
+    mut stable_id_map: ResMut<StableIdMap>,
     time: Res<Time>,
 ) {
     let dt = time.delta_secs();
@@ -29,11 +30,12 @@ pub fn combat_system(
         attack_range: f32,
         min_attack_range: f32,
         cooldown_timer: f32,
-        is_player: bool,
+        team: u8,
+        stable_id: Option<u64>,
     }
 
     let mut infos: Vec<CombatInfo> = Vec::new();
-    for (entity, unit, transform, player, _enemy, _commander, _building) in &units {
+    for (entity, unit, transform, team, _commander, _building, sid) in &units {
         infos.push(CombatInfo {
             entity,
             pos: game_xy(&transform.translation),
@@ -41,11 +43,15 @@ pub fn combat_system(
             attack_range: unit.attack_range,
             min_attack_range: unit.min_attack_range,
             cooldown_timer: unit.cooldown_timer,
-            is_player: player.is_some(),
+            team: team.0,
+            stable_id: sid.map(|s| s.0),
         });
     }
 
-    let mut shots: Vec<(Vec2, Entity, f32, bool)> = Vec::new();
+    // Sort by StableId for deterministic target acquisition
+    infos.sort_by_key(|i| i.stable_id.unwrap_or(u64::MAX));
+
+    let mut shots: Vec<(Vec2, Entity, f32, u8)> = Vec::new();
     let mut cooldown_resets: Vec<Entity> = Vec::new();
 
     for info in &infos {
@@ -55,7 +61,7 @@ pub fn combat_system(
 
         let mut nearest: Option<(Entity, f32)> = None;
         for other in &infos {
-            if other.entity == info.entity || other.is_player == info.is_player {
+            if other.entity == info.entity || other.team == info.team {
                 continue;
             }
             let dist = info.pos.distance(other.pos);
@@ -67,7 +73,7 @@ pub fn combat_system(
         }
 
         if let Some((target, _)) = nearest {
-            shots.push((info.pos, target, info.attack_damage, info.is_player));
+            shots.push((info.pos, target, info.attack_damage, info.team));
             cooldown_resets.push(info.entity);
         }
     }
@@ -81,8 +87,8 @@ pub fn combat_system(
         }
     }
 
-    for (from_pos, target, damage, is_player) in shots {
-        let color = if is_player {
+    for (from_pos, target, damage, team) in shots {
+        let color = if team == 0 {
             Color::srgb(0.5, 0.8, 1.0)
         } else {
             Color::srgb(1.0, 0.6, 0.3)
@@ -106,8 +112,8 @@ pub fn combat_system(
     }
 
     // Collect death info before removing
-    let mut deaths: Vec<(Entity, Vec2, bool, f32)> = Vec::new();
-    for (entity, unit, transform, _player, _enemy, commander, _building) in &units {
+    let mut deaths: Vec<(Entity, Vec2, bool, f32, Option<u64>)> = Vec::new();
+    for (entity, unit, transform, _team, commander, _building, sid) in &units {
         if unit.hp <= 0.0 {
             let metal_value = if commander.is_some() {
                 250.0
@@ -119,11 +125,12 @@ pub fn combat_system(
                 game_xy(&transform.translation),
                 commander.is_some(),
                 metal_value,
+                sid.map(|s| s.0),
             ));
         }
     }
 
-    for (entity, pos, is_commander, metal_value) in &deaths {
+    for (entity, pos, is_commander, metal_value, sid) in &deaths {
         if *is_commander {
             for info in &infos {
                 if info.entity == *entity {
@@ -168,6 +175,9 @@ pub fn combat_system(
             },
         ));
 
+        if let Some(sid) = sid {
+            stable_id_map.remove(*sid);
+        }
         commands.entity(*entity).despawn();
     }
 }

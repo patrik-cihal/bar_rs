@@ -1,8 +1,9 @@
 use bevy::ecs::message::MessageReader;
+use bevy::input::keyboard::KeyboardInput;
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 
-use crate::spawning::*;
+use crate::networking::*;
 use crate::types::*;
 
 // --- Input & Camera ---
@@ -20,8 +21,6 @@ pub fn update_cursor_world_pos(
         return;
     };
     if let Some(screen_pos) = window.cursor_position() {
-        // Cast ray from camera and intersect with terrain surface
-        // Iterative approach: intersect at estimated height, refine
         if let Ok(ray) = camera.viewport_to_world(cam_transform, screen_pos) {
             let dir_y = ray.direction.y;
             if dir_y.abs() > 0.001 {
@@ -62,11 +61,7 @@ pub fn camera_movement(
     };
     let speed = CAMERA_SPEED * scale * dt;
 
-    // Camera moves along the ground plane (XZ), maintaining its height/angle
-    // W/Up = screen up = camera's local "forward" projected onto XZ
-    // With tilted camera, forward has both -Z and -Y components;
-    // we only want the XZ movement to keep the camera at constant angle
-    let forward_xz = Vec3::new(0.0, 0.0, -1.0); // game north = world -Z
+    let forward_xz = Vec3::new(0.0, 0.0, -1.0);
     let right_xz = Vec3::new(1.0, 0.0, 0.0);
 
     if keyboard.pressed(KeyCode::KeyW) || keyboard.pressed(KeyCode::ArrowUp) {
@@ -100,8 +95,9 @@ pub fn unit_selection(
     mut drag: ResMut<DragSelect>,
     build_mode: Res<BuildMode>,
     dgun_mode: Res<DGunMode>,
+    local_player: Res<LocalPlayer>,
     mut commands: Commands,
-    units: Query<(Entity, &Transform, &Unit), With<PlayerOwned>>,
+    units: Query<(Entity, &Transform, &Unit, &TeamOwned)>,
     selected: Query<Entity, With<Selected>>,
     mut sel_box_q: Query<(&mut Transform, &mut Visibility), (With<SelectionBox>, Without<Unit>)>,
 ) {
@@ -143,7 +139,10 @@ pub fn unit_selection(
             if let Some(start) = drag.start {
                 let min = start.min(world);
                 let max = start.max(world);
-                for (entity, transform, _) in &units {
+                for (entity, transform, _, team) in &units {
+                    if team.0 != local_player.id {
+                        continue;
+                    }
                     let pos = game_xy(&transform.translation);
                     if pos.x >= min.x && pos.x <= max.x && pos.y >= min.y && pos.y <= max.y {
                         commands.entity(entity).insert(Selected);
@@ -152,7 +151,10 @@ pub fn unit_selection(
             }
         } else {
             let mut closest: Option<(Entity, f32)> = None;
-            for (entity, transform, _) in &units {
+            for (entity, transform, _, team) in &units {
+                if team.0 != local_player.id {
+                    continue;
+                }
                 let dist = game_xy(&transform.translation).distance(world);
                 if dist < 30.0 {
                     if closest.is_none() || dist < closest.unwrap().1 {
@@ -178,11 +180,12 @@ pub fn unit_commands(
     cursor_pos: Res<CursorWorldPos>,
     build_mode: Res<BuildMode>,
     dgun_mode: Res<DGunMode>,
-    mut commands: Commands,
-    selected_units: Query<(Entity, Option<&Commander>), (With<Selected>, With<PlayerOwned>, With<Unit>)>,
-    enemy_units: Query<(Entity, &Transform), (With<EnemyOwned>, With<Unit>)>,
-    wreckages: Query<(Entity, &Transform), With<Wreckage>>,
-    map_features: Query<(Entity, &Transform), With<MapFeature>>,
+    local_player: Res<LocalPlayer>,
+    mut local_commands: ResMut<LocalCommands>,
+    selected_units: Query<(Entity, &TeamOwned, &StableId, Option<&Commander>), (With<Selected>, With<Unit>)>,
+    enemy_units: Query<(Entity, &Transform, &TeamOwned, &StableId), With<Unit>>,
+    wreckages: Query<(Entity, &Transform, Option<&StableId>), With<Wreckage>>,
+    map_features: Query<(Entity, &Transform, Option<&StableId>), With<MapFeature>>,
 ) {
     if build_mode.active || dgun_mode.0 {
         return;
@@ -191,75 +194,94 @@ pub fn unit_commands(
     if mouse.just_pressed(MouseButton::Right) {
         let world = cursor_pos.0;
 
-        let mut target_enemy: Option<Entity> = None;
-        for (enemy_entity, enemy_tf) in &enemy_units {
+        // Find target enemy
+        let mut target_enemy: Option<(Entity, u64)> = None;
+        for (enemy_entity, enemy_tf, enemy_team, enemy_sid) in &enemy_units {
+            if enemy_team.0 == local_player.id {
+                continue;
+            }
             if game_xy(&enemy_tf.translation).distance(world) < 30.0 {
-                target_enemy = Some(enemy_entity);
+                target_enemy = Some((enemy_entity, enemy_sid.0));
                 break;
             }
         }
 
-        let mut target_reclaim: Option<Entity> = None;
+        // Find reclaim target
+        let mut target_reclaim: Option<u64> = None;
         if target_enemy.is_none() {
-            for (wreck_entity, wreck_tf) in &wreckages {
+            for (_wreck_entity, wreck_tf, wreck_sid) in &wreckages {
                 if game_xy(&wreck_tf.translation).distance(world) < 30.0 {
-                    target_reclaim = Some(wreck_entity);
+                    if let Some(sid) = wreck_sid {
+                        target_reclaim = Some(sid.0);
+                    }
                     break;
                 }
             }
             if target_reclaim.is_none() {
-                for (feat_entity, feat_tf) in &map_features {
+                for (_feat_entity, feat_tf, feat_sid) in &map_features {
                     if game_xy(&feat_tf.translation).distance(world) < 30.0 {
-                        target_reclaim = Some(feat_entity);
+                        if let Some(sid) = feat_sid {
+                            target_reclaim = Some(sid.0);
+                        }
                         break;
                     }
                 }
             }
         }
 
-        for (entity, commander) in &selected_units {
-            if let Some(enemy) = target_enemy {
-                commands
-                    .entity(entity)
-                    .insert(AttackTarget(enemy))
-                    .remove::<MoveTarget>()
-                    .remove::<ReclaimTarget>()
-                    .remove::<BuildTarget>();
-            } else if let Some(reclaim) = target_reclaim {
-                if commander.is_some() {
-                    commands
-                        .entity(entity)
-                        .insert(ReclaimTarget(reclaim))
-                        .remove::<MoveTarget>()
-                        .remove::<AttackTarget>()
-                        .remove::<BuildTarget>();
-                } else {
-                    commands
-                        .entity(entity)
-                        .insert(MoveTarget(world))
-                        .remove::<AttackTarget>()
-                        .remove::<ReclaimTarget>()
-                        .remove::<BuildTarget>();
-                }
-            } else {
-                commands
-                    .entity(entity)
-                    .insert(MoveTarget(world))
-                    .remove::<AttackTarget>()
-                    .remove::<ReclaimTarget>()
-                    .remove::<BuildTarget>();
+        // Collect selected unit IDs
+        let local_units: Vec<(u64, bool)> = selected_units.iter()
+            .filter(|(_, t, _, _)| t.0 == local_player.id)
+            .map(|(_, _, sid, cmd)| (sid.0, cmd.is_some()))
+            .collect();
+
+        if local_units.is_empty() {
+            return;
+        }
+
+        if let Some((_, target_sid)) = target_enemy {
+            let unit_ids: Vec<u64> = local_units.iter().map(|(id, _)| *id).collect();
+            local_commands.commands.push(GameCommand::AttackUnits {
+                unit_ids,
+                target_id: target_sid,
+            });
+        } else if let Some(reclaim_sid) = target_reclaim {
+            // Only commanders can reclaim; others move
+            let commanders: Vec<u64> = local_units.iter().filter(|(_, is_cmd)| *is_cmd).map(|(id, _)| *id).collect();
+            let non_commanders: Vec<u64> = local_units.iter().filter(|(_, is_cmd)| !*is_cmd).map(|(id, _)| *id).collect();
+
+            for cid in commanders {
+                local_commands.commands.push(GameCommand::Reclaim {
+                    commander_id: cid,
+                    target_id: reclaim_sid,
+                });
             }
+            if !non_commanders.is_empty() {
+                local_commands.commands.push(GameCommand::MoveUnits {
+                    unit_ids: non_commanders,
+                    target: (world.x, world.y),
+                });
+            }
+        } else {
+            let unit_ids: Vec<u64> = local_units.iter().map(|(id, _)| *id).collect();
+            local_commands.commands.push(GameCommand::MoveUnits {
+                unit_ids,
+                target: (world.x, world.y),
+            });
         }
     }
 }
 
 pub fn build_mode_input(
     keyboard: Res<ButtonInput<KeyCode>>,
+    mut key_events: MessageReader<KeyboardInput>,
     mut build_mode: ResMut<BuildMode>,
     mut dgun_mode: ResMut<DGunMode>,
-    selected_commanders: Query<(), (With<Selected>, With<Commander>, With<PlayerOwned>)>,
+    local_player: Res<LocalPlayer>,
+    selected_commanders: Query<&TeamOwned, (With<Selected>, With<Commander>)>,
 ) {
-    if !selected_commanders.is_empty() {
+    let has_local_commander = selected_commanders.iter().any(|t| t.0 == local_player.id);
+    if has_local_commander {
         if keyboard.just_pressed(KeyCode::Digit1) {
             build_mode.active = true;
             build_mode.building_type = Some(BuildingType::MetalExtractor);
@@ -291,10 +313,12 @@ pub fn build_mode_input(
             dgun_mode.0 = false;
         }
     }
-    if keyboard.just_pressed(KeyCode::Escape) {
-        build_mode.active = false;
-        build_mode.building_type = None;
-        dgun_mode.0 = false;
+    for ev in key_events.read() {
+        if ev.state.is_pressed() && ev.logical_key == bevy::input::keyboard::Key::Escape {
+            build_mode.active = false;
+            build_mode.building_type = None;
+            dgun_mode.0 = false;
+        }
     }
 }
 
@@ -303,14 +327,12 @@ pub fn building_placement(
     cursor_pos: Res<CursorWorldPos>,
     terrain: Res<TerrainHeightmap>,
     mut build_mode: ResMut<BuildMode>,
-    mut resources: ResMut<GameResources>,
+    all_resources: Res<AllTeamResources>,
+    local_player: Res<LocalPlayer>,
+    mut local_commands: ResMut<LocalCommands>,
     metal_spots: Query<&Transform, With<MetalSpot>>,
     existing_buildings: Query<(&Transform, &Building), Without<MetalSpot>>,
-    selected_commanders: Query<Entity, (With<Selected>, With<PlayerOwned>, With<Commander>)>,
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    models: Res<ModelLibrary>,
+    selected_commanders: Query<(&TeamOwned, &StableId), (With<Selected>, With<Commander>)>,
 ) {
     if !build_mode.active {
         return;
@@ -326,7 +348,8 @@ pub fn building_placement(
         let bs = btype.stats();
         let (metal_cost, energy_cost) = (bs.metal_cost, bs.energy_cost);
 
-        if resources.metal < metal_cost || resources.energy < energy_cost {
+        let team_id = local_player.id as usize;
+        if all_resources.teams[team_id].metal < metal_cost || all_resources.teams[team_id].energy < energy_cost {
             return;
         }
 
@@ -370,19 +393,17 @@ pub fn building_placement(
             return;
         }
 
-        resources.metal -= metal_cost;
-        resources.energy -= energy_cost;
+        // Collect commander IDs for BuildTarget assignment
+        let commander_ids: Vec<u64> = selected_commanders.iter()
+            .filter(|(t, _)| t.0 == local_player.id)
+            .map(|(_, sid)| sid.0)
+            .collect();
 
-        let building_entity = spawn_building_entity(&mut commands, &mut meshes, &mut materials, place_pos, btype, true, false, &models);
-
-        for entity in &selected_commanders {
-            commands
-                .entity(entity)
-                .insert(BuildTarget(building_entity))
-                .remove::<MoveTarget>()
-                .remove::<AttackTarget>()
-                .remove::<ReclaimTarget>();
-        }
+        local_commands.commands.push(GameCommand::PlaceBuilding {
+            building_type: btype.to_u8(),
+            position: (place_pos.x, place_pos.y),
+            commander_ids,
+        });
 
         build_mode.active = false;
         build_mode.building_type = None;
@@ -391,41 +412,32 @@ pub fn building_placement(
 
 pub fn factory_queue_input(
     keyboard: Res<ButtonInput<KeyCode>>,
-    mut factories: Query<(&mut Factory, &Building), (With<Selected>, With<PlayerOwned>)>,
+    local_player: Res<LocalPlayer>,
+    mut local_commands: ResMut<LocalCommands>,
+    factories: Query<(&Factory, &Building, &TeamOwned, &StableId), With<Selected>>,
 ) {
-    for (mut factory, building) in &mut factories {
-        if !building.built {
+    for (_factory, building, team, sid) in &factories {
+        if !building.built || team.0 != local_player.id {
             continue;
         }
 
         let shift = keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight);
         let count = if shift { 5 } else { 1 };
 
-        if keyboard.just_pressed(KeyCode::KeyQ) {
+        let mut queue_type = |unit_type: UnitType| {
             for _ in 0..count {
-                factory.queue.push(UnitType::Scout);
+                local_commands.commands.push(GameCommand::QueueUnit {
+                    factory_id: sid.0,
+                    unit_type: unit_type.to_u8(),
+                });
             }
-        }
-        if keyboard.just_pressed(KeyCode::KeyW) {
-            for _ in 0..count {
-                factory.queue.push(UnitType::Raider);
-            }
-        }
-        if keyboard.just_pressed(KeyCode::KeyE) {
-            for _ in 0..count {
-                factory.queue.push(UnitType::Tank);
-            }
-        }
-        if keyboard.just_pressed(KeyCode::KeyR) {
-            for _ in 0..count {
-                factory.queue.push(UnitType::Assault);
-            }
-        }
-        if keyboard.just_pressed(KeyCode::KeyT) {
-            for _ in 0..count {
-                factory.queue.push(UnitType::Artillery);
-            }
-        }
+        };
+
+        if keyboard.just_pressed(KeyCode::KeyQ) { queue_type(UnitType::Scout); }
+        if keyboard.just_pressed(KeyCode::KeyW) { queue_type(UnitType::Raider); }
+        if keyboard.just_pressed(KeyCode::KeyE) { queue_type(UnitType::Tank); }
+        if keyboard.just_pressed(KeyCode::KeyR) { queue_type(UnitType::Assault); }
+        if keyboard.just_pressed(KeyCode::KeyT) { queue_type(UnitType::Artillery); }
     }
 }
 
@@ -435,15 +447,14 @@ pub fn dgun_input(
     cursor_pos: Res<CursorWorldPos>,
     mut dgun_mode: ResMut<DGunMode>,
     mut build_mode: ResMut<BuildMode>,
-    mut resources: ResMut<GameResources>,
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    terrain: Res<TerrainHeightmap>,
-    selected_commanders: Query<(Entity, &Transform), (With<Selected>, With<Commander>, With<PlayerOwned>)>,
+    all_resources: Res<AllTeamResources>,
+    local_player: Res<LocalPlayer>,
+    mut local_commands: ResMut<LocalCommands>,
+    selected_commanders: Query<(Entity, &Transform, &TeamOwned, &StableId), (With<Selected>, With<Commander>)>,
 ) {
     if keyboard.just_pressed(KeyCode::KeyG) {
-        if !selected_commanders.is_empty() {
+        let has_local = selected_commanders.iter().any(|(_, _, t, _)| t.0 == local_player.id);
+        if has_local {
             dgun_mode.0 = !dgun_mode.0;
             if dgun_mode.0 {
                 build_mode.active = false;
@@ -457,11 +468,15 @@ pub fn dgun_input(
     }
 
     if mouse.just_pressed(MouseButton::Left) {
-        if resources.energy < DGUN_ENERGY_COST {
+        let team_id = local_player.id as usize;
+        if all_resources.teams[team_id].energy < DGUN_ENERGY_COST {
             return;
         }
 
-        for (_, cmd_tf) in &selected_commanders {
+        for (_, cmd_tf, team, sid) in &selected_commanders {
+            if team.0 != local_player.id {
+                continue;
+            }
             let cmd_pos = game_xy(&cmd_tf.translation);
             let target_pos = cursor_pos.0;
             let dist = cmd_pos.distance(target_pos);
@@ -470,45 +485,10 @@ pub fn dgun_input(
                 continue;
             }
 
-            resources.energy -= DGUN_ENERGY_COST;
-
-            let direction = (target_pos - cmd_pos).normalize_or_zero();
-            let end_pos = cmd_pos + direction * DGUN_RANGE;
-
-            let target_entity = commands
-                .spawn((
-                    Transform::from_translation(game_pos(end_pos.x, end_pos.y, terrain.height_at(end_pos.x, end_pos.y))),
-                    Unit {
-                        hp: 1.0,
-                        max_hp: 1.0,
-                        speed: 0.0,
-                        attack_damage: 0.0,
-                        attack_range: 0.0,
-                        attack_cooldown: 999.0,
-                        cooldown_timer: 0.0,
-                        min_attack_range: 0.0,
-                        radius: 0.0,
-                    },
-                    Visibility::Hidden,
-                ))
-                .id();
-
-            commands.spawn((
-                Mesh3d(meshes.add(Sphere::new(4.0))),
-                MeshMaterial3d(materials.add(StandardMaterial {
-                    base_color: Color::srgb(1.0, 1.0, 0.0),
-                    emissive: LinearRgba::new(5.0, 5.0, 0.0, 1.0),
-                    unlit: true,
-                    ..default()
-                })),
-                Transform::from_translation(game_pos(cmd_pos.x, cmd_pos.y, terrain.height_at(cmd_pos.x, cmd_pos.y) + 1.5)),
-                Projectile {
-                    target: target_entity,
-                    damage: 9999.0,
-                    speed: PROJECTILE_SPEED * 1.5,
-                    is_dgun: true,
-                },
-            ));
+            local_commands.commands.push(GameCommand::DGun {
+                commander_id: sid.0,
+                target_pos: (target_pos.x, target_pos.y),
+            });
 
             break;
         }

@@ -112,19 +112,29 @@ pub fn terrain_follow_system(
 // --- Fog of War ---
 
 pub fn fog_of_war_system(
-    player_units: Query<(&Transform, &SightRange), With<PlayerOwned>>,
-    player_radars: Query<(&Transform, &RadarRangeComp, &Building), With<PlayerOwned>>,
+    local_player: Res<LocalPlayer>,
+    friendly_units: Query<(&Transform, &SightRange, &TeamOwned)>,
+    friendly_radars: Query<(&Transform, &RadarRangeComp, &Building, &TeamOwned)>,
     mut enemy_entities: Query<
-        (Entity, &Transform, &mut Visibility, Option<&Wreckage>),
-        (With<EnemyOwned>, Without<PlayerOwned>),
+        (Entity, &Transform, &mut Visibility, &TeamOwned, Option<&Wreckage>),
+        With<Unit>,
     >,
 ) {
-    for (_entity, enemy_tf, mut vis, _wreckage) in &mut enemy_entities {
+    let local_team = local_player.id;
+
+    for (_entity, enemy_tf, mut vis, team, _wreckage) in &mut enemy_entities {
+        if team.0 == local_team {
+            continue; // don't hide our own units
+        }
+
         let enemy_pos = game_xy(&enemy_tf.translation);
         let mut in_sight = false;
         let mut in_radar = false;
 
-        for (friendly_tf, sight_range) in &player_units {
+        for (friendly_tf, sight_range, friendly_team) in &friendly_units {
+            if friendly_team.0 != local_team {
+                continue;
+            }
             let dist = game_xy(&friendly_tf.translation).distance(enemy_pos);
             if dist <= sight_range.0 {
                 in_sight = true;
@@ -133,8 +143,8 @@ pub fn fog_of_war_system(
         }
 
         if !in_sight {
-            for (radar_tf, radar_range, building) in &player_radars {
-                if !building.built {
+            for (radar_tf, radar_range, building, radar_team) in &friendly_radars {
+                if radar_team.0 != local_team || !building.built {
                     continue;
                 }
                 let dist = game_xy(&radar_tf.translation).distance(enemy_pos);
@@ -156,8 +166,9 @@ pub fn fog_of_war_system(
 // --- Fog Overlay Visualization ---
 
 pub fn fog_overlay_system(
-    player_units: Query<(&Transform, &SightRange), With<PlayerOwned>>,
-    player_radars: Query<(&Transform, &RadarRangeComp, &Building), With<PlayerOwned>>,
+    local_player: Res<LocalPlayer>,
+    all_units: Query<(&Transform, &SightRange, &TeamOwned)>,
+    all_radars: Query<(&Transform, &RadarRangeComp, &Building, &TeamOwned)>,
     fog_query: Query<&Mesh3d, With<FogOverlay>>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
@@ -168,19 +179,21 @@ pub fn fog_overlay_system(
         return;
     };
 
+    let local_team = local_player.id;
     let gs = FOG_GRID_SIZE;
     let cell_size = MAP_SIZE / (gs - 1) as f32;
 
     // Collect player vision sources
-    let sight_sources: Vec<(Vec2, f32)> = player_units
+    let sight_sources: Vec<(Vec2, f32)> = all_units
         .iter()
-        .map(|(tf, sr)| (game_xy(&tf.translation), sr.0))
+        .filter(|(_, _, t)| t.0 == local_team)
+        .map(|(tf, sr, _)| (game_xy(&tf.translation), sr.0))
         .collect();
 
-    let radar_sources: Vec<(Vec2, f32)> = player_radars
+    let radar_sources: Vec<(Vec2, f32)> = all_radars
         .iter()
-        .filter(|(_, _, b)| b.built)
-        .map(|(tf, rr, _)| (game_xy(&tf.translation), rr.0))
+        .filter(|(_, _, b, t)| t.0 == local_team && b.built)
+        .map(|(tf, rr, _, _)| (game_xy(&tf.translation), rr.0))
         .collect();
 
     // Build new vertex colors

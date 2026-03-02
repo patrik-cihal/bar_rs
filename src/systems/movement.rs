@@ -90,7 +90,7 @@ pub fn unit_movement(
 pub fn building_construction(
     mut commands: Commands,
     mut buildings: Query<(Entity, &mut Building, &mut Transform)>,
-    commanders: Query<(Entity, &Transform, Option<&BuildTarget>), (With<Commander>, With<PlayerOwned>, Without<Building>)>,
+    commanders: Query<(Entity, &Transform, Option<&BuildTarget>), (With<Commander>, Without<Building>)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     time: Res<Time>,

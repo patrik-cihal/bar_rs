@@ -4,6 +4,7 @@ use bevy::mesh::{Indices, VertexAttributeValues, PrimitiveTopology};
 use bevy::render::view::NoIndirectDrawing;
 use std::collections::HashMap;
 
+use crate::networking::NetRole;
 use crate::spawning::*;
 use crate::types::*;
 
@@ -74,6 +75,9 @@ pub fn setup_map(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     asset_server: Res<AssetServer>,
+    mut next_stable_id: ResMut<NextStableId>,
+    mut stable_id_map: ResMut<StableIdMap>,
+    net_role: Res<NetRole>,
 ) {
     // Load all unit and building models (blue + red variants)
     let mut models = HashMap::new();
@@ -173,9 +177,11 @@ pub fn setup_map(
         &mut meshes,
         &mut materials,
         Vec2::new(200.0, 200.0),
-        true,
+        0, // team 0 = blue
         None,
         &model_library,
+        &mut next_stable_id,
+        &mut stable_id_map,
     );
 
     // Enemy commander (top-right)
@@ -184,63 +190,77 @@ pub fn setup_map(
         &mut meshes,
         &mut materials,
         Vec2::new(1800.0, 1800.0),
-        false,
+        1, // team 1 = red
         None,
         &model_library,
+        &mut next_stable_id,
+        &mut stable_id_map,
     );
 
-    // Enemy tanks
-    for offset in &[
-        Vec2::new(-80.0, 0.0),
-        Vec2::new(0.0, -80.0),
-        Vec2::new(-80.0, -80.0),
-        Vec2::new(-160.0, 0.0),
-    ] {
-        spawn_unit(
+    // In singleplayer, spawn enemy tanks and buildings for AI opponent
+    // In multiplayer, player 2 starts with just a commander (symmetric)
+    if matches!(*net_role, NetRole::Singleplayer) {
+        // Enemy tanks
+        for offset in &[
+            Vec2::new(-80.0, 0.0),
+            Vec2::new(0.0, -80.0),
+            Vec2::new(-80.0, -80.0),
+            Vec2::new(-160.0, 0.0),
+        ] {
+            spawn_unit(
+                &mut commands,
+                &mut meshes,
+                &mut materials,
+                Vec2::new(1800.0, 1800.0) + *offset,
+                1,
+                Some(UnitType::Tank),
+                &model_library,
+                &mut next_stable_id,
+                &mut stable_id_map,
+            );
+        }
+
+        // Enemy buildings (snapped to build grid, extractor on a metal spot)
+        let enemy_ext_pos = snap_to_build_grid(Vec2::new(1800.0, 1800.0), BuildingType::MetalExtractor.stats().size);
+        spawn_building_entity(
             &mut commands,
             &mut meshes,
             &mut materials,
-            Vec2::new(1800.0, 1800.0) + *offset,
-            false,
-            Some(UnitType::Tank),
+            enemy_ext_pos,
+            BuildingType::MetalExtractor,
+            1,
+            true,
             &model_library,
+            &mut next_stable_id,
+            &mut stable_id_map,
+        );
+        let enemy_solar_pos = snap_to_build_grid(Vec2::new(1760.0, 1696.0), BuildingType::SolarCollector.stats().size);
+        spawn_building_entity(
+            &mut commands,
+            &mut meshes,
+            &mut materials,
+            enemy_solar_pos,
+            BuildingType::SolarCollector,
+            1,
+            true,
+            &model_library,
+            &mut next_stable_id,
+            &mut stable_id_map,
+        );
+        let enemy_fac_pos = snap_to_build_grid(Vec2::new(1600.0, 1696.0), BuildingType::Factory.stats().size);
+        spawn_building_entity(
+            &mut commands,
+            &mut meshes,
+            &mut materials,
+            enemy_fac_pos,
+            BuildingType::Factory,
+            1,
+            true,
+            &model_library,
+            &mut next_stable_id,
+            &mut stable_id_map,
         );
     }
-
-    // Enemy buildings (snapped to build grid, extractor on a metal spot)
-    let enemy_ext_pos = snap_to_build_grid(Vec2::new(1800.0, 1800.0), BuildingType::MetalExtractor.stats().size);
-    spawn_building_entity(
-        &mut commands,
-        &mut meshes,
-        &mut materials,
-        enemy_ext_pos,
-        BuildingType::MetalExtractor,
-        false,
-        true,
-        &model_library,
-    );
-    let enemy_solar_pos = snap_to_build_grid(Vec2::new(1760.0, 1696.0), BuildingType::SolarCollector.stats().size);
-    spawn_building_entity(
-        &mut commands,
-        &mut meshes,
-        &mut materials,
-        enemy_solar_pos,
-        BuildingType::SolarCollector,
-        false,
-        true,
-        &model_library,
-    );
-    let enemy_fac_pos = snap_to_build_grid(Vec2::new(1600.0, 1696.0), BuildingType::Factory.stats().size);
-    spawn_building_entity(
-        &mut commands,
-        &mut meshes,
-        &mut materials,
-        enemy_fac_pos,
-        BuildingType::Factory,
-        false,
-        true,
-        &model_library,
-    );
 
     commands.insert_resource(model_library);
     commands.insert_resource(terrain);
@@ -323,6 +343,26 @@ pub fn setup_hud(mut commands: Commands) {
                 HudFactoryQueue,
             ));
         });
+
+    // Network status (top-right)
+    commands.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(10.0),
+            right: Val::Px(10.0),
+            ..default()
+        },
+    )).with_children(|parent| {
+        parent.spawn((
+            Text::new(""),
+            TextFont {
+                font_size: 16.0,
+                ..default()
+            },
+            TextColor(Color::srgb(0.5, 1.0, 0.5)),
+            HudNetStatus,
+        ));
+    });
 
     // Minimap frame (bottom-left)
     commands.spawn((

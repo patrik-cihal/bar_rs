@@ -8,10 +8,12 @@ pub fn spawn_unit(
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
     pos: Vec2,
-    is_player: bool,
+    team: u8,
     unit_type: Option<UnitType>,
     models: &ModelLibrary,
-) {
+    next_stable_id: &mut NextStableId,
+    stable_id_map: &mut StableIdMap,
+) -> Entity {
     let is_commander = unit_type.is_none();
 
     let s = if is_commander {
@@ -34,7 +36,10 @@ pub fn spawn_unit(
         radius: s.radius,
     };
 
-    let mut entity = if let Some(model_handle) = models.get(s.model_file, is_player) {
+    let sid = StableId(next_stable_id.0);
+    next_stable_id.0 += 1;
+
+    let mut entity = if let Some(model_handle) = models.get(s.model_file, team) {
         // Use 3D model from ModelLibrary
         let mut e = commands.spawn((
             SceneRoot(model_handle.clone()),
@@ -42,6 +47,8 @@ pub fn spawn_unit(
                 .with_scale(Vec3::splat(s.model_scale)),
             unit_component,
             SightRange(s.sight_range),
+            TeamOwned(team),
+            sid,
         ));
         if is_commander {
             e.insert(CommanderWalkAnim { phase: 0.0, active: false });
@@ -49,7 +56,7 @@ pub fn spawn_unit(
         e
     } else {
         // Fallback: cylinder mesh
-        let color = if is_player {
+        let color = if team == 0 {
             Color::srgb(0.3, 0.5, 0.9)
         } else {
             Color::srgb(0.9, 0.3, 0.3)
@@ -64,14 +71,10 @@ pub fn spawn_unit(
             Transform::from_translation(world_pos),
             unit_component,
             SightRange(s.sight_range),
+            TeamOwned(team),
+            sid,
         ))
     };
-
-    if is_player {
-        entity.insert(PlayerOwned);
-    } else {
-        entity.insert(EnemyOwned);
-    }
 
     if is_commander {
         entity.insert(Commander);
@@ -114,6 +117,10 @@ pub fn spawn_unit(
                 ));
             });
     });
+
+    let entity_id = entity.id();
+    stable_id_map.insert(sid.0, entity_id);
+    entity_id
 }
 
 pub fn spawn_building_entity(
@@ -122,16 +129,21 @@ pub fn spawn_building_entity(
     materials: &mut ResMut<Assets<StandardMaterial>>,
     pos: Vec2,
     building_type: BuildingType,
-    is_player: bool,
+    team: u8,
     pre_built: bool,
     models: &ModelLibrary,
+    next_stable_id: &mut NextStableId,
+    stable_id_map: &mut StableIdMap,
 ) -> Entity {
     let bs = building_type.stats();
     let size = Vec2::new(bs.size.0, bs.size.1);
 
     let world_pos = game_pos(pos.x, pos.y, 0.0);
 
-    let mut entity = if let Some(model_handle) = models.get(bs.model_file, is_player) {
+    let sid = StableId(next_stable_id.0);
+    next_stable_id.0 += 1;
+
+    let mut entity = if let Some(model_handle) = models.get(bs.model_file, team) {
         // Use 3D model from ModelLibrary
         commands.spawn((
             SceneRoot(model_handle.clone()),
@@ -155,16 +167,18 @@ pub fn spawn_building_entity(
                 radius: 0.0,
             },
             SightRange(bs.sight_range),
+            TeamOwned(team),
+            sid,
         ))
     } else {
         // Fallback: cuboid mesh
         let color = match building_type {
-            BuildingType::MetalExtractor => if is_player { Color::srgb(0.3, 0.3, 0.8) } else { Color::srgb(0.8, 0.3, 0.3) },
-            BuildingType::SolarCollector => if is_player { Color::srgb(0.8, 0.8, 0.2) } else { Color::srgb(0.8, 0.5, 0.2) },
-            BuildingType::Factory => if is_player { Color::srgb(0.2, 0.6, 0.2) } else { Color::srgb(0.6, 0.2, 0.2) },
-            BuildingType::LLT => if is_player { Color::srgb(0.4, 0.4, 0.7) } else { Color::srgb(0.7, 0.4, 0.4) },
-            BuildingType::Wall => if is_player { Color::srgb(0.5, 0.5, 0.5) } else { Color::srgb(0.6, 0.4, 0.4) },
-            BuildingType::RadarTower => if is_player { Color::srgb(0.3, 0.7, 0.7) } else { Color::srgb(0.7, 0.5, 0.3) },
+            BuildingType::MetalExtractor => if team == 0 { Color::srgb(0.3, 0.3, 0.8) } else { Color::srgb(0.8, 0.3, 0.3) },
+            BuildingType::SolarCollector => if team == 0 { Color::srgb(0.8, 0.8, 0.2) } else { Color::srgb(0.8, 0.5, 0.2) },
+            BuildingType::Factory => if team == 0 { Color::srgb(0.2, 0.6, 0.2) } else { Color::srgb(0.6, 0.2, 0.2) },
+            BuildingType::LLT => if team == 0 { Color::srgb(0.4, 0.4, 0.7) } else { Color::srgb(0.7, 0.4, 0.4) },
+            BuildingType::Wall => if team == 0 { Color::srgb(0.5, 0.5, 0.5) } else { Color::srgb(0.6, 0.4, 0.4) },
+            BuildingType::RadarTower => if team == 0 { Color::srgb(0.3, 0.7, 0.7) } else { Color::srgb(0.7, 0.5, 0.3) },
         };
 
         let alpha = if pre_built { 1.0 } else { 0.5 };
@@ -197,14 +211,10 @@ pub fn spawn_building_entity(
                 radius: 0.0,
             },
             SightRange(bs.sight_range),
+            TeamOwned(team),
+            sid,
         ))
     };
-
-    if is_player {
-        entity.insert(PlayerOwned);
-    } else {
-        entity.insert(EnemyOwned);
-    }
 
     match building_type {
         BuildingType::MetalExtractor => {
@@ -260,5 +270,6 @@ pub fn spawn_building_entity(
             });
     });
 
+    stable_id_map.insert(sid.0, building_id);
     building_id
 }

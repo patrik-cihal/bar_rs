@@ -48,8 +48,10 @@ pub const PROJECTILE_SIZE: f32 = 4.0;
 pub const MINIMAP_SIZE: f32 = 180.0;
 pub const EXTRACTOR_SNAP_RANGE: f32 = 50.0;
 pub const BUILD_GRID_SIZE: f32 = 16.0;
-pub const EXTRACTOR_INCOME: f32 = 2.0;
-pub const SOLAR_INCOME: f32 = 10.0;
+pub const EXTRACTOR_INCOME: f32 = 1.5;
+pub const SOLAR_INCOME: f32 = 12.0;
+pub const COMMANDER_METAL_INCOME: f32 = 1.0;
+pub const COMMANDER_ENERGY_INCOME: f32 = 15.0;
 pub const RADAR_RANGE: f32 = 600.0;
 
 // --- Unit Stats Table ---
@@ -84,7 +86,7 @@ const SCOUT_STATS: UnitStats = UnitStats {
     name: "Scout",
     hp: 80.0, speed: 200.0, attack_damage: 5.0, attack_range: 100.0,
     attack_cooldown: 0.5, min_attack_range: 0.0,
-    metal_cost: 20.0, energy_cost: 15.0, build_time: 3.0,
+    metal_cost: 55.0, energy_cost: 500.0, build_time: 8.0,
     sight_range: 400.0, radius: 10.0,
     model_file: "armpeep", model_scale: 0.35,
 };
@@ -93,7 +95,7 @@ const RAIDER_STATS: UnitStats = UnitStats {
     name: "Raider",
     hp: 120.0, speed: 160.0, attack_damage: 15.0, attack_range: 130.0,
     attack_cooldown: 0.6, min_attack_range: 0.0,
-    metal_cost: 35.0, energy_cost: 20.0, build_time: 4.0,
+    metal_cost: 110.0, energy_cost: 600.0, build_time: 10.0,
     sight_range: 250.0, radius: 12.0,
     model_file: "armflash", model_scale: 0.35,
 };
@@ -102,7 +104,7 @@ const TANK_STATS: UnitStats = UnitStats {
     name: "Tank",
     hp: 200.0, speed: 120.0, attack_damage: 20.0, attack_range: 200.0,
     attack_cooldown: 0.8, min_attack_range: 0.0,
-    metal_cost: 50.0, energy_cost: 30.0, build_time: 5.0,
+    metal_cost: 225.0, energy_cost: 1500.0, build_time: 15.0,
     sight_range: 250.0, radius: 14.0,
     model_file: "armstump", model_scale: 0.35,
 };
@@ -111,7 +113,7 @@ const ASSAULT_STATS: UnitStats = UnitStats {
     name: "Assault",
     hp: 400.0, speed: 60.0, attack_damage: 40.0, attack_range: 150.0,
     attack_cooldown: 1.2, min_attack_range: 0.0,
-    metal_cost: 100.0, energy_cost: 60.0, build_time: 7.0,
+    metal_cost: 400.0, energy_cost: 4000.0, build_time: 20.0,
     sight_range: 250.0, radius: 16.0,
     model_file: "armbull", model_scale: 0.35,
 };
@@ -120,7 +122,7 @@ const ARTILLERY_STATS: UnitStats = UnitStats {
     name: "Artillery",
     hp: 100.0, speed: 50.0, attack_damage: 60.0, attack_range: 400.0,
     attack_cooldown: 2.0, min_attack_range: 150.0,
-    metal_cost: 80.0, energy_cost: 50.0, build_time: 6.0,
+    metal_cost: 130.0, energy_cost: 1000.0, build_time: 12.0,
     sight_range: 250.0, radius: 13.0,
     model_file: "armham", model_scale: 0.35,
 };
@@ -142,7 +144,7 @@ pub struct BuildingStats {
 }
 
 const EXTRACTOR_STATS: BuildingStats = BuildingStats {
-    metal_cost: 60.0, energy_cost: 0.0, build_time: 3.0,
+    metal_cost: 50.0, energy_cost: 300.0, build_time: 5.0,
     size: (32.0, 32.0), hp: 300.0,
     attack_damage: 0.0, attack_range: 0.0, attack_cooldown: 999.0,
     sight_range: 200.0,
@@ -150,7 +152,7 @@ const EXTRACTOR_STATS: BuildingStats = BuildingStats {
 };
 
 const SOLAR_STATS: BuildingStats = BuildingStats {
-    metal_cost: 20.0, energy_cost: 0.0, build_time: 2.0,
+    metal_cost: 75.0, energy_cost: 0.0, build_time: 3.0,
     size: (32.0, 32.0), hp: 300.0,
     attack_damage: 0.0, attack_range: 0.0, attack_cooldown: 999.0,
     sight_range: 200.0,
@@ -158,7 +160,7 @@ const SOLAR_STATS: BuildingStats = BuildingStats {
 };
 
 const FACTORY_STATS: BuildingStats = BuildingStats {
-    metal_cost: 200.0, energy_cost: 200.0, build_time: 8.0,
+    metal_cost: 500.0, energy_cost: 1000.0, build_time: 15.0,
     size: (48.0, 48.0), hp: 300.0,
     attack_damage: 0.0, attack_range: 0.0, attack_cooldown: 999.0,
     sight_range: 200.0,
@@ -166,7 +168,7 @@ const FACTORY_STATS: BuildingStats = BuildingStats {
 };
 
 const LLT_STATS: BuildingStats = BuildingStats {
-    metal_cost: 60.0, energy_cost: 0.0, build_time: 4.0,
+    metal_cost: 85.0, energy_cost: 500.0, build_time: 8.0,
     size: (32.0, 32.0), hp: 400.0,
     attack_damage: 25.0, attack_range: 250.0, attack_cooldown: 0.6,
     sight_range: 200.0,
@@ -174,7 +176,7 @@ const LLT_STATS: BuildingStats = BuildingStats {
 };
 
 const WALL_STATS: BuildingStats = BuildingStats {
-    metal_cost: 5.0, energy_cost: 0.0, build_time: 1.0,
+    metal_cost: 10.0, energy_cost: 0.0, build_time: 1.0,
     size: (16.0, 16.0), hp: 500.0,
     attack_damage: 0.0, attack_range: 0.0, attack_cooldown: 999.0,
     sight_range: 200.0,
@@ -182,7 +184,7 @@ const WALL_STATS: BuildingStats = BuildingStats {
 };
 
 const RADAR_STATS: BuildingStats = BuildingStats {
-    metal_cost: 50.0, energy_cost: 30.0, build_time: 5.0,
+    metal_cost: 60.0, energy_cost: 300.0, build_time: 5.0,
     size: (32.0, 32.0), hp: 200.0,
     attack_damage: 0.0, attack_range: 0.0, attack_cooldown: 999.0,
     sight_range: 200.0,
@@ -222,11 +224,12 @@ pub struct Assault;
 #[derive(Component)]
 pub struct Artillery;
 
-#[derive(Component)]
-pub struct PlayerOwned;
+#[derive(Component, Clone, Copy, Debug)]
+pub struct TeamOwned(pub u8);
 
-#[derive(Component)]
-pub struct EnemyOwned;
+/// Stable identifier for deterministic network references (Entity handles are local)
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct StableId(pub u64);
 
 #[derive(Component)]
 pub struct Selected;
@@ -378,6 +381,9 @@ pub struct HudBuildHint;
 pub struct HudFactoryQueue;
 
 #[derive(Component)]
+pub struct HudNetStatus;
+
+#[derive(Component)]
 pub struct GameOverText;
 
 #[derive(Component)]
@@ -406,7 +412,7 @@ impl Default for GameResources {
     fn default() -> Self {
         Self {
             metal: 1000.0,
-            energy: 1000.0,
+            energy: 2000.0,
             metal_income: 0.0,
             energy_income: 0.0,
         }
@@ -435,13 +441,68 @@ pub struct GameOver(pub Option<String>);
 pub struct DGunMode(pub bool);
 
 #[derive(Resource)]
+pub struct LocalPlayer {
+    pub id: u8,
+}
+
+impl Default for LocalPlayer {
+    fn default() -> Self {
+        Self { id: 0 }
+    }
+}
+
+/// Per-team resources (metal, energy, income)
+#[derive(Resource)]
+pub struct AllTeamResources {
+    pub teams: [GameResources; 2],
+}
+
+impl Default for AllTeamResources {
+    fn default() -> Self {
+        Self {
+            teams: [GameResources::default(), GameResources::default()],
+        }
+    }
+}
+
+/// Counter for assigning StableIds
+#[derive(Resource)]
+pub struct NextStableId(pub u64);
+
+impl Default for NextStableId {
+    fn default() -> Self {
+        Self(1)
+    }
+}
+
+/// Map from StableId to Entity for network command resolution
+#[derive(Resource, Default)]
+pub struct StableIdMap {
+    pub map: HashMap<u64, Entity>,
+}
+
+impl StableIdMap {
+    pub fn insert(&mut self, id: u64, entity: Entity) {
+        self.map.insert(id, entity);
+    }
+
+    pub fn get(&self, id: u64) -> Option<Entity> {
+        self.map.get(&id).copied()
+    }
+
+    pub fn remove(&mut self, id: u64) {
+        self.map.remove(&id);
+    }
+}
+
+#[derive(Resource)]
 pub struct ModelLibrary {
     pub models: HashMap<String, Handle<Scene>>,
 }
 
 impl ModelLibrary {
-    pub fn get(&self, model_file: &str, is_player: bool) -> Option<&Handle<Scene>> {
-        let key = format!("{}_{}", model_file, if is_player { "blue" } else { "red" });
+    pub fn get(&self, model_file: &str, team: u8) -> Option<&Handle<Scene>> {
+        let key = format!("{}_{}", model_file, if team == 0 { "blue" } else { "red" });
         self.models.get(&key)
     }
 }

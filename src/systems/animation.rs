@@ -636,31 +636,25 @@ fn animate_building_pieces(
 // ============================================================
 
 pub fn llt_turret_animation_system(
-    llts: Query<(Entity, &Transform, &Unit), (With<LightLaserTower>, With<Building>)>,
-    enemies: Query<&Transform, (With<Unit>, With<EnemyOwned>, Without<Building>)>,
-    player_enemies: Query<&Transform, (With<Unit>, With<PlayerOwned>, Without<Building>)>,
-    llt_ownership: Query<Option<&PlayerOwned>, With<LightLaserTower>>,
+    llts: Query<(Entity, &Transform, &Unit, &TeamOwned), (With<LightLaserTower>, With<Building>)>,
+    all_units: Query<(&Transform, &TeamOwned), (With<Unit>, Without<Building>)>,
     children_query: Query<&Children>,
     name_query: Query<&Name>,
     mut transform_query: Query<&mut Transform, (Without<Commander>, Without<Unit>)>,
     time: Res<Time>,
 ) {
     let t = time.elapsed_secs();
-    for (entity, llt_tf, unit) in &llts {
+    for (entity, llt_tf, unit, llt_team) in &llts {
         let llt_pos = game_xy(&llt_tf.translation);
-        let is_player = llt_ownership.get(entity).ok().flatten().is_some();
 
         // Find nearest enemy
         let mut nearest_dir = Vec2::ZERO;
         let mut nearest_dist = f32::MAX;
 
-        let target_query_iter: Box<dyn Iterator<Item = &Transform>> = if is_player {
-            Box::new(enemies.iter())
-        } else {
-            Box::new(player_enemies.iter())
-        };
-
-        for enemy_tf in target_query_iter {
+        for (enemy_tf, enemy_team) in &all_units {
+            if enemy_team.0 == llt_team.0 {
+                continue;
+            }
             let enemy_pos = game_xy(&enemy_tf.translation);
             let dist = llt_pos.distance(enemy_pos);
             if dist <= unit.attack_range && dist < nearest_dist {

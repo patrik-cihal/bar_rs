@@ -1,57 +1,75 @@
 use bevy::prelude::*;
 
+use crate::networking::NetRole;
 use crate::spawning::*;
 use crate::types::*;
 
 // --- Economy ---
 
 pub fn resource_production(
-    mut resources: ResMut<GameResources>,
-    extractors: Query<&Building, (With<MetalExtractor>, With<PlayerOwned>)>,
-    solars: Query<&Building, (With<SolarCollector>, With<PlayerOwned>)>,
+    mut all_resources: ResMut<AllTeamResources>,
+    extractors: Query<(&Building, &TeamOwned), With<MetalExtractor>>,
+    solars: Query<(&Building, &TeamOwned), With<SolarCollector>>,
+    commanders: Query<&TeamOwned, With<Commander>>,
     time: Res<Time>,
 ) {
     let dt = time.delta_secs();
-    let mut metal_income = 0.0;
-    let mut energy_income = 0.0;
 
-    for building in &extractors {
+    for team_res in all_resources.teams.iter_mut() {
+        team_res.metal_income = 0.0;
+        team_res.energy_income = 0.0;
+    }
+
+    // Commander passive income (like BAR)
+    for team in &commanders {
+        all_resources.teams[team.0 as usize].metal_income += COMMANDER_METAL_INCOME;
+        all_resources.teams[team.0 as usize].energy_income += COMMANDER_ENERGY_INCOME;
+    }
+
+    for (building, team) in &extractors {
         if building.built {
-            metal_income += EXTRACTOR_INCOME;
+            all_resources.teams[team.0 as usize].metal_income += EXTRACTOR_INCOME;
         }
     }
 
-    for building in &solars {
+    for (building, team) in &solars {
         if building.built {
-            energy_income += SOLAR_INCOME;
+            all_resources.teams[team.0 as usize].energy_income += SOLAR_INCOME;
         }
     }
 
-    resources.metal += metal_income * dt;
-    resources.energy += energy_income * dt;
-    resources.metal_income = metal_income;
-    resources.energy_income = energy_income;
+    for team_res in all_resources.teams.iter_mut() {
+        team_res.metal += team_res.metal_income * dt;
+        team_res.energy += team_res.energy_income * dt;
+    }
 }
 
 pub fn factory_production(
     mut commands: Commands,
-    mut factories: Query<(&mut Factory, &Building, &Transform, Option<&PlayerOwned>, Option<&EnemyOwned>)>,
-    mut resources: ResMut<GameResources>,
+    mut factories: Query<(&mut Factory, &Building, &Transform, &TeamOwned)>,
+    mut all_resources: ResMut<AllTeamResources>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     models: Res<ModelLibrary>,
+    mut next_stable_id: ResMut<NextStableId>,
+    mut stable_id_map: ResMut<StableIdMap>,
+    net_role: Res<NetRole>,
     time: Res<Time>,
 ) {
     let dt = time.delta_secs();
+    let is_multiplayer = !matches!(*net_role, NetRole::Singleplayer);
 
-    for (mut factory, building, transform, player, _enemy) in &mut factories {
+    for (mut factory, building, transform, team) in &mut factories {
         if !building.built {
             continue;
         }
 
-        let is_player = player.is_some();
+        let team_id = team.0 as usize;
 
-        if is_player {
+        // In multiplayer, all teams use queue-based production
+        // In singleplayer, only team 0 uses queue; others auto-produce
+        if is_multiplayer || team_id == 0 {
+            // Queue-based production
             if factory.queue.is_empty() {
                 continue;
             }
@@ -60,11 +78,11 @@ pub fn factory_production(
             let us = unit_type.stats();
 
             if factory.produce_timer == 0.0 {
-                if resources.metal < us.metal_cost || resources.energy < us.energy_cost {
+                if all_resources.teams[team_id].metal < us.metal_cost || all_resources.teams[team_id].energy < us.energy_cost {
                     continue;
                 }
-                resources.metal -= us.metal_cost;
-                resources.energy -= us.energy_cost;
+                all_resources.teams[team_id].metal -= us.metal_cost;
+                all_resources.teams[team_id].energy -= us.energy_cost;
                 factory.current_build_time = us.build_time;
             }
 
@@ -81,12 +99,15 @@ pub fn factory_production(
                     &mut meshes,
                     &mut materials,
                     spawn_pos,
-                    true,
+                    team.0,
                     Some(unit_type),
                     &models,
+                    &mut next_stable_id,
+                    &mut stable_id_map,
                 );
             }
         } else {
+            // Singleplayer AI: auto-produce tanks
             factory.produce_timer += dt;
             if factory.produce_timer >= 5.0 {
                 factory.produce_timer = 0.0;
@@ -97,9 +118,11 @@ pub fn factory_production(
                     &mut meshes,
                     &mut materials,
                     spawn_pos,
-                    false,
+                    team.0,
                     Some(UnitType::Tank),
                     &models,
+                    &mut next_stable_id,
+                    &mut stable_id_map,
                 );
             }
         }
@@ -108,26 +131,27 @@ pub fn factory_production(
 
 pub fn reclaim_system(
     mut commands: Commands,
-    mut resources: ResMut<GameResources>,
-    reclaimers: Query<(Entity, &Transform, Option<&ReclaimTarget>), (With<Commander>, With<PlayerOwned>)>,
+    mut all_resources: ResMut<AllTeamResources>,
+    reclaimers: Query<(Entity, &Transform, &TeamOwned, Option<&ReclaimTarget>), With<Commander>>,
     mut wreckages: Query<(Entity, &Transform, &mut Wreckage), Without<Commander>>,
     mut map_features: Query<(Entity, &Transform, &mut MapFeature), (Without<Commander>, Without<Wreckage>)>,
     time: Res<Time>,
 ) {
     let dt = time.delta_secs();
 
-    for (_cmd_entity, cmd_tf, reclaim_target) in &reclaimers {
+    for (_cmd_entity, cmd_tf, team, reclaim_target) in &reclaimers {
         let Some(ReclaimTarget(target)) = reclaim_target else {
             continue;
         };
         let cmd_pos = game_xy(&cmd_tf.translation);
+        let team_id = team.0 as usize;
 
         if let Ok((wreck_entity, wreck_tf, mut wreckage)) = wreckages.get_mut(*target) {
             let dist = cmd_pos.distance(game_xy(&wreck_tf.translation));
             if dist <= RECLAIM_RANGE {
                 let reclaim_rate = wreckage.metal_value / RECLAIM_TIME;
                 let reclaimed = reclaim_rate * dt;
-                resources.metal += reclaimed;
+                all_resources.teams[team_id].metal += reclaimed;
                 wreckage.metal_value -= reclaimed;
                 if wreckage.metal_value <= 0.0 {
                     commands.entity(wreck_entity).despawn();
@@ -138,7 +162,7 @@ pub fn reclaim_system(
             if dist <= RECLAIM_RANGE {
                 let reclaim_rate = feature.metal_value / RECLAIM_TIME;
                 let reclaimed = reclaim_rate * dt;
-                resources.metal += reclaimed;
+                all_resources.teams[team_id].metal += reclaimed;
                 feature.metal_value -= reclaimed;
                 if feature.metal_value <= 0.0 {
                     commands.entity(feat_entity).despawn();
