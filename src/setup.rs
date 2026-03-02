@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy::audio::AudioSource;
 use bevy::light::{CascadeShadowConfigBuilder, GlobalAmbientLight};
 use bevy::mesh::{Indices, VertexAttributeValues, PrimitiveTopology};
 use bevy::post_process::bloom::Bloom;
@@ -199,70 +200,20 @@ pub fn setup_map(
         &mut stable_id_map,
     );
 
-    // In singleplayer, spawn enemy tanks and buildings for AI opponent
-    // In multiplayer, player 2 starts with just a commander (symmetric)
-    if matches!(*net_role, NetRole::Singleplayer) {
-        // Enemy tanks
-        for offset in &[
-            Vec2::new(-80.0, 0.0),
-            Vec2::new(0.0, -80.0),
-            Vec2::new(-80.0, -80.0),
-            Vec2::new(-160.0, 0.0),
-        ] {
-            spawn_unit(
-                &mut commands,
-                &mut meshes,
-                &mut materials,
-                Vec2::new(1800.0, 1800.0) + *offset,
-                1,
-                Some(UnitType::Tank),
-                &model_library,
-                &mut next_stable_id,
-                &mut stable_id_map,
-            );
-        }
+    // Both players start with just a commander (symmetric start)
 
-        // Enemy buildings (snapped to build grid, extractor on a metal spot)
-        let enemy_ext_pos = snap_to_build_grid(Vec2::new(1800.0, 1800.0), BuildingType::MetalExtractor.stats().size);
-        spawn_building_entity(
-            &mut commands,
-            &mut meshes,
-            &mut materials,
-            enemy_ext_pos,
-            BuildingType::MetalExtractor,
-            1,
-            true,
-            &model_library,
-            &mut next_stable_id,
-            &mut stable_id_map,
-        );
-        let enemy_solar_pos = snap_to_build_grid(Vec2::new(1760.0, 1696.0), BuildingType::SolarCollector.stats().size);
-        spawn_building_entity(
-            &mut commands,
-            &mut meshes,
-            &mut materials,
-            enemy_solar_pos,
-            BuildingType::SolarCollector,
-            1,
-            true,
-            &model_library,
-            &mut next_stable_id,
-            &mut stable_id_map,
-        );
-        let enemy_fac_pos = snap_to_build_grid(Vec2::new(1600.0, 1696.0), BuildingType::Factory.stats().size);
-        spawn_building_entity(
-            &mut commands,
-            &mut meshes,
-            &mut materials,
-            enemy_fac_pos,
-            BuildingType::Factory,
-            1,
-            true,
-            &model_library,
-            &mut next_stable_id,
-            &mut stable_id_map,
-        );
+    // Load all sound effects
+    let mut sounds = HashMap::new();
+    for name in [
+        "lasrfir1", "flashemg", "cannon1", "cannhvy1", "lasrfir3", "disigun1",
+        "xplosml2", "xplomed2", "xplolrg3",
+        "cmd-move-short", "cmd-attack", "cmd-build", "cmd-reclaim", "cmd-default-select",
+        "unitready", "build2", "nanlath1",
+    ] {
+        let handle: Handle<AudioSource> = asset_server.load(format!("sounds/{}.wav", name));
+        sounds.insert(name.to_string(), handle);
     }
+    commands.insert_resource(SoundLibrary { sounds });
 
     let nav_grid = NavGrid::new(&terrain);
     commands.insert_resource(model_library);

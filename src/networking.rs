@@ -526,6 +526,7 @@ pub fn apply_commands_system(
                                             attack_damage: 0.0, attack_range: 0.0,
                                             attack_cooldown: 999.0, cooldown_timer: 0.0,
                                             min_attack_range: 0.0, radius: 0.0,
+                                            weapon_sound: "", death_sound: "",
                                         },
                                         Visibility::Hidden,
                                     ))

@@ -1,3 +1,4 @@
+use bevy::audio::{AudioPlayer, PlaybackSettings, Volume};
 use bevy::ecs::message::MessageReader;
 use bevy::input::keyboard::KeyboardInput;
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
@@ -97,6 +98,7 @@ pub fn unit_selection(
     dgun_mode: Res<DGunMode>,
     local_player: Res<LocalPlayer>,
     mut commands: Commands,
+    sounds: Res<SoundLibrary>,
     units: Query<(Entity, &Transform, &Unit, &TeamOwned)>,
     selected: Query<Entity, With<Selected>>,
     mut sel_box_q: Query<(&mut Transform, &mut Visibility), (With<SelectionBox>, Without<Unit>)>,
@@ -164,6 +166,12 @@ pub fn unit_selection(
             }
             if let Some((entity, _)) = closest {
                 commands.entity(entity).insert(Selected);
+                if let Some(handle) = sounds.get("cmd-default-select") {
+                    commands.spawn((
+                        AudioPlayer::new(handle.clone()),
+                        PlaybackSettings::ONCE.with_volume(Volume::Linear(0.25)),
+                    ));
+                }
             }
         }
 
@@ -181,6 +189,8 @@ pub fn unit_commands(
     build_mode: Res<BuildMode>,
     dgun_mode: Res<DGunMode>,
     local_player: Res<LocalPlayer>,
+    mut commands: Commands,
+    sounds: Res<SoundLibrary>,
     mut local_commands: ResMut<LocalCommands>,
     selected_units: Query<(Entity, &TeamOwned, &StableId, Option<&Commander>), (With<Selected>, With<Unit>)>,
     enemy_units: Query<(Entity, &Transform, &TeamOwned, &StableId), With<Unit>>,
@@ -245,6 +255,12 @@ pub fn unit_commands(
                 unit_ids,
                 target_id: target_sid,
             });
+            if let Some(handle) = sounds.get("cmd-attack") {
+                commands.spawn((
+                    AudioPlayer::new(handle.clone()),
+                    PlaybackSettings::ONCE.with_volume(Volume::Linear(0.3)),
+                ));
+            }
         } else if let Some(reclaim_sid) = target_reclaim {
             // Only commanders can reclaim; others move
             let commanders: Vec<u64> = local_units.iter().filter(|(_, is_cmd)| *is_cmd).map(|(id, _)| *id).collect();
@@ -255,6 +271,12 @@ pub fn unit_commands(
                     commander_id: cid,
                     target_id: reclaim_sid,
                 });
+            }
+            if let Some(handle) = sounds.get("cmd-reclaim") {
+                commands.spawn((
+                    AudioPlayer::new(handle.clone()),
+                    PlaybackSettings::ONCE.with_volume(Volume::Linear(0.3)),
+                ));
             }
             if !non_commanders.is_empty() {
                 local_commands.commands.push(GameCommand::MoveUnits {
@@ -268,6 +290,12 @@ pub fn unit_commands(
                 unit_ids,
                 target: (world.x, world.y),
             });
+            if let Some(handle) = sounds.get("cmd-move-short") {
+                commands.spawn((
+                    AudioPlayer::new(handle.clone()),
+                    PlaybackSettings::ONCE.with_volume(Volume::Linear(0.3)),
+                ));
+            }
         }
     }
 }
@@ -329,6 +357,8 @@ pub fn building_placement(
     mut build_mode: ResMut<BuildMode>,
     all_resources: Res<AllTeamResources>,
     local_player: Res<LocalPlayer>,
+    mut commands: Commands,
+    sounds: Res<SoundLibrary>,
     mut local_commands: ResMut<LocalCommands>,
     metal_spots: Query<&Transform, With<MetalSpot>>,
     existing_buildings: Query<(&Transform, &Building), Without<MetalSpot>>,
@@ -404,6 +434,12 @@ pub fn building_placement(
             position: (place_pos.x, place_pos.y),
             commander_ids,
         });
+        if let Some(handle) = sounds.get("cmd-build") {
+            commands.spawn((
+                AudioPlayer::new(handle.clone()),
+                PlaybackSettings::ONCE.with_volume(Volume::Linear(0.4)),
+            ));
+        }
 
         build_mode.active = false;
         build_mode.building_type = None;
@@ -449,6 +485,8 @@ pub fn dgun_input(
     mut build_mode: ResMut<BuildMode>,
     all_resources: Res<AllTeamResources>,
     local_player: Res<LocalPlayer>,
+    mut commands: Commands,
+    sounds: Res<SoundLibrary>,
     mut local_commands: ResMut<LocalCommands>,
     selected_commanders: Query<(Entity, &Transform, &TeamOwned, &StableId), (With<Selected>, With<Commander>)>,
 ) {
@@ -489,6 +527,12 @@ pub fn dgun_input(
                 commander_id: sid.0,
                 target_pos: (target_pos.x, target_pos.y),
             });
+            if let Some(handle) = sounds.get("disigun1") {
+                commands.spawn((
+                    AudioPlayer::new(handle.clone()),
+                    PlaybackSettings::ONCE.with_volume(Volume::Linear(0.7)),
+                ));
+            }
 
             break;
         }

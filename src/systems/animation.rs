@@ -47,7 +47,7 @@ fn deg(d: f32) -> f32 {
 pub fn commander_animation_system(
     time: Res<Time>,
     mut commanders: Query<
-        (Entity, &mut Transform, &mut CommanderWalkAnim, Option<&MoveTarget>, Option<&AttackTarget>, Option<&ReclaimTarget>, Option<&BuildTarget>),
+        (Entity, &mut Transform, &mut CommanderWalkAnim, Option<&MoveTarget>, Option<&AttackTarget>, Option<&ReclaimTarget>, Option<&BuildTarget>, Option<&Path>),
         With<Commander>,
     >,
     target_transforms: Query<&GlobalTransform, Without<Commander>>,
@@ -58,8 +58,9 @@ pub fn commander_animation_system(
     let dt = time.delta_secs();
     let t = time.elapsed_secs();
 
-    for (cmd_entity, mut tf, mut walk_anim, move_target, attack_target, reclaim_target, build_target) in &mut commanders {
-        let is_moving = move_target.is_some() || attack_target.is_some() || reclaim_target.is_some() || build_target.is_some();
+    for (cmd_entity, mut tf, mut walk_anim, move_target, attack_target, reclaim_target, build_target, path) in &mut commanders {
+        let has_path = path.map_or(false, |p| !p.waypoints.is_empty());
+        let is_moving = move_target.is_some() || attack_target.is_some() || reclaim_target.is_some() || build_target.is_some() || has_path;
         walk_anim.active = is_moving;
 
         if is_moving {
@@ -72,6 +73,7 @@ pub fn commander_animation_system(
         }
 
         // Determine facing direction
+        // Priority: AttackTarget/ReclaimTarget/BuildTarget > Path waypoint > MoveTarget
         let pos = game_xy(&tf.translation);
         let face_toward_entity = |entity: Entity| -> Vec2 {
             if let Ok(target_tf) = target_transforms.get(entity) {
@@ -81,14 +83,22 @@ pub fn commander_animation_system(
                 Vec2::ZERO
             }
         };
-        let face_dir = if let Some(MoveTarget(target)) = move_target {
-            (*target - pos).normalize_or_zero()
-        } else if let Some(AttackTarget(e)) = attack_target {
+        let face_dir = if let Some(AttackTarget(e)) = attack_target {
             face_toward_entity(*e)
         } else if let Some(ReclaimTarget(e)) = reclaim_target {
             face_toward_entity(*e)
         } else if let Some(BuildTarget(e)) = build_target {
             face_toward_entity(*e)
+        } else if let Some(p) = path {
+            if let Some(wp) = p.waypoints.first() {
+                (*wp - pos).normalize_or_zero()
+            } else if let Some(MoveTarget(target)) = move_target {
+                (*target - pos).normalize_or_zero()
+            } else {
+                Vec2::ZERO
+            }
+        } else if let Some(MoveTarget(target)) = move_target {
+            (*target - pos).normalize_or_zero()
         } else {
             Vec2::ZERO
         };
@@ -285,7 +295,7 @@ fn apply_commander_piece_anim(
 pub fn biped_walk_animation_system(
     time: Res<Time>,
     mut bipeds: Query<
-        (Entity, &mut BipedWalkAnim, Option<&MoveTarget>),
+        (Entity, &mut BipedWalkAnim, Option<&MoveTarget>, Option<&Path>),
         (With<Unit>, With<Artillery>, Without<Commander>),
     >,
     children_query: Query<&Children>,
@@ -295,8 +305,9 @@ pub fn biped_walk_animation_system(
     let dt = time.delta_secs();
     let t = time.elapsed_secs();
 
-    for (entity, mut walk_anim, move_target) in &mut bipeds {
-        let is_moving = move_target.is_some();
+    for (entity, mut walk_anim, move_target, path) in &mut bipeds {
+        let has_path = path.map_or(false, |p| !p.waypoints.is_empty());
+        let is_moving = move_target.is_some() || has_path;
         walk_anim.active = is_moving;
 
         if is_moving {
@@ -460,7 +471,7 @@ fn apply_armham_piece_anim(
 
 pub fn vehicle_animation_system(
     units: Query<
-        (Entity, &Transform, Option<&AttackTarget>, Option<&MoveTarget>),
+        (Entity, &Transform, Option<&AttackTarget>, Option<&MoveTarget>, Option<&Path>),
         (With<VehicleAnim>, With<Unit>, Without<Commander>, Without<Building>),
     >,
     target_transforms: Query<&GlobalTransform, With<Unit>>,
@@ -471,7 +482,7 @@ pub fn vehicle_animation_system(
 ) {
     let t = time.elapsed_secs();
 
-    for (entity, unit_tf, attack_target, move_target) in &units {
+    for (entity, unit_tf, attack_target, move_target, path) in &units {
         let unit_pos = game_xy(&unit_tf.translation);
 
         // Get unit's facing angle to compute relative turret heading
@@ -498,7 +509,8 @@ pub fn vehicle_animation_system(
         };
 
         // Is moving? For wheel spin
-        let is_moving = move_target.is_some();
+        let has_path = path.map_or(false, |p| !p.waypoints.is_empty());
+        let is_moving = move_target.is_some() || has_path;
 
         // Traverse children and animate turret, wheels
         animate_vehicle_pieces(
@@ -709,18 +721,17 @@ fn animate_llt_pieces(
 
 pub fn unit_facing_system(
     mut units: Query<
-        (&mut Transform, Option<&MoveTarget>, Option<&AttackTarget>),
+        (&mut Transform, Option<&MoveTarget>, Option<&AttackTarget>, Option<&Path>),
         (With<Unit>, Without<Commander>, Without<Building>, Without<Artillery>),
     >,
     target_transforms: Query<&Transform, Or<(With<Commander>, With<Building>)>>,
     global_transforms: Query<&GlobalTransform>,
 ) {
-    for (mut tf, move_target, attack_target) in &mut units {
+    for (mut tf, move_target, attack_target, path) in &mut units {
         let pos = game_xy(&tf.translation);
 
-        let face_dir = if let Some(MoveTarget(target)) = move_target {
-            (*target - pos).normalize_or_zero()
-        } else if let Some(AttackTarget(target_entity)) = attack_target {
+        // Priority: AttackTarget > Path waypoint > MoveTarget
+        let face_dir = if let Some(AttackTarget(target_entity)) = attack_target {
             if let Ok(target_tf) = target_transforms.get(*target_entity) {
                 (game_xy(&target_tf.translation) - pos).normalize_or_zero()
             } else if let Ok(gtf) = global_transforms.get(*target_entity) {
@@ -729,6 +740,16 @@ pub fn unit_facing_system(
             } else {
                 Vec2::ZERO
             }
+        } else if let Some(p) = path {
+            if let Some(wp) = p.waypoints.first() {
+                (*wp - pos).normalize_or_zero()
+            } else if let Some(MoveTarget(target)) = move_target {
+                (*target - pos).normalize_or_zero()
+            } else {
+                Vec2::ZERO
+            }
+        } else if let Some(MoveTarget(target)) = move_target {
+            (*target - pos).normalize_or_zero()
         } else {
             Vec2::ZERO
         };
@@ -743,18 +764,17 @@ pub fn unit_facing_system(
 /// Facing system for artillery biped units
 pub fn artillery_facing_system(
     mut units: Query<
-        (&mut Transform, Option<&MoveTarget>, Option<&AttackTarget>),
+        (&mut Transform, Option<&MoveTarget>, Option<&AttackTarget>, Option<&Path>),
         (With<Artillery>, Without<Commander>, Without<Building>),
     >,
     target_transforms: Query<&Transform, Or<(With<Commander>, With<Building>)>>,
     global_transforms: Query<&GlobalTransform>,
 ) {
-    for (mut tf, move_target, attack_target) in &mut units {
+    for (mut tf, move_target, attack_target, path) in &mut units {
         let pos = game_xy(&tf.translation);
 
-        let face_dir = if let Some(MoveTarget(target)) = move_target {
-            (*target - pos).normalize_or_zero()
-        } else if let Some(AttackTarget(target_entity)) = attack_target {
+        // Priority: AttackTarget > Path waypoint > MoveTarget
+        let face_dir = if let Some(AttackTarget(target_entity)) = attack_target {
             if let Ok(target_tf) = target_transforms.get(*target_entity) {
                 (game_xy(&target_tf.translation) - pos).normalize_or_zero()
             } else if let Ok(gtf) = global_transforms.get(*target_entity) {
@@ -763,6 +783,16 @@ pub fn artillery_facing_system(
             } else {
                 Vec2::ZERO
             }
+        } else if let Some(p) = path {
+            if let Some(wp) = p.waypoints.first() {
+                (*wp - pos).normalize_or_zero()
+            } else if let Some(MoveTarget(target)) = move_target {
+                (*target - pos).normalize_or_zero()
+            } else {
+                Vec2::ZERO
+            }
+        } else if let Some(MoveTarget(target)) = move_target {
+            (*target - pos).normalize_or_zero()
         } else {
             Vec2::ZERO
         };

@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy::audio::{AudioPlayer, PlaybackSettings, Volume};
 
 use crate::types::*;
 
@@ -19,6 +20,7 @@ pub fn combat_system(
     mut materials: ResMut<Assets<StandardMaterial>>,
     terrain: Res<TerrainHeightmap>,
     mut stable_id_map: ResMut<StableIdMap>,
+    sounds: Res<SoundLibrary>,
     time: Res<Time>,
 ) {
     let dt = time.delta_secs();
@@ -32,6 +34,7 @@ pub fn combat_system(
         cooldown_timer: f32,
         team: u8,
         stable_id: Option<u64>,
+        weapon_sound: &'static str,
     }
 
     let mut infos: Vec<CombatInfo> = Vec::new();
@@ -45,13 +48,14 @@ pub fn combat_system(
             cooldown_timer: unit.cooldown_timer,
             team: team.0,
             stable_id: sid.map(|s| s.0),
+            weapon_sound: unit.weapon_sound,
         });
     }
 
     // Sort by StableId for deterministic target acquisition
     infos.sort_by_key(|i| i.stable_id.unwrap_or(u64::MAX));
 
-    let mut shots: Vec<(Vec2, Entity, f32, u8)> = Vec::new();
+    let mut shots: Vec<(Vec2, Entity, f32, u8, &str)> = Vec::new();
     let mut cooldown_resets: Vec<Entity> = Vec::new();
 
     for info in &infos {
@@ -73,7 +77,7 @@ pub fn combat_system(
         }
 
         if let Some((target, _)) = nearest {
-            shots.push((info.pos, target, info.attack_damage, info.team));
+            shots.push((info.pos, target, info.attack_damage, info.team, info.weapon_sound));
             cooldown_resets.push(info.entity);
         }
     }
@@ -87,7 +91,7 @@ pub fn combat_system(
         }
     }
 
-    for (from_pos, target, damage, team) in shots {
+    for (from_pos, target, damage, team, weapon_sound) in shots {
         let color = if team == 0 {
             Color::srgb(0.5, 0.8, 1.0)
         } else {
@@ -110,6 +114,15 @@ pub fn combat_system(
                 is_dgun: false,
             },
         ));
+        // Weapon fire sound
+        if !weapon_sound.is_empty() {
+            if let Some(handle) = sounds.get(weapon_sound) {
+                commands.spawn((
+                    AudioPlayer::new(handle.clone()),
+                    PlaybackSettings::ONCE.with_volume(Volume::Linear(0.5)),
+                ));
+            }
+        }
         // Muzzle flash at shooter position
         let flash_color = if team == 0 {
             LinearRgba::new(2.0, 4.0, 8.0, 1.0)
@@ -130,7 +143,7 @@ pub fn combat_system(
     }
 
     // Collect death info before removing
-    let mut deaths: Vec<(Entity, Vec2, bool, f32, Option<u64>)> = Vec::new();
+    let mut deaths: Vec<(Entity, Vec2, bool, f32, Option<u64>, &str)> = Vec::new();
     for (entity, unit, transform, _team, commander, _building, sid) in &units {
         if unit.hp <= 0.0 {
             let metal_value = if commander.is_some() {
@@ -144,11 +157,22 @@ pub fn combat_system(
                 commander.is_some(),
                 metal_value,
                 sid.map(|s| s.0),
+                unit.death_sound,
             ));
         }
     }
 
-    for (entity, pos, is_commander, metal_value, sid) in &deaths {
+    for (entity, pos, is_commander, metal_value, sid, death_sound) in &deaths {
+        // Death explosion sound
+        if !death_sound.is_empty() {
+            if let Some(handle) = sounds.get(*death_sound) {
+                let vol = if *is_commander { 0.9 } else if *death_sound == "xplomed2" { 0.7 } else { 0.6 };
+                commands.spawn((
+                    AudioPlayer::new(handle.clone()),
+                    PlaybackSettings::ONCE.with_volume(Volume::Linear(vol)),
+                ));
+            }
+        }
         if *is_commander {
             for info in &infos {
                 if info.entity == *entity {

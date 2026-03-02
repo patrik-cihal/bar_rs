@@ -72,6 +72,8 @@ pub struct UnitStats {
     pub radius: f32,
     pub model_file: &'static str,
     pub model_scale: f32,
+    pub weapon_sound: &'static str,
+    pub death_sound: &'static str,
 }
 
 pub const COMMANDER_STATS: UnitStats = UnitStats {
@@ -81,6 +83,7 @@ pub const COMMANDER_STATS: UnitStats = UnitStats {
     metal_cost: 0.0, energy_cost: 0.0, build_time: 0.0,
     sight_range: 300.0, radius: 20.0,
     model_file: "armcom", model_scale: 0.4,
+    weapon_sound: "lasrfir1", death_sound: "xplolrg3",
 };
 
 const SCOUT_STATS: UnitStats = UnitStats {
@@ -90,6 +93,7 @@ const SCOUT_STATS: UnitStats = UnitStats {
     metal_cost: 55.0, energy_cost: 500.0, build_time: 8.0,
     sight_range: 400.0, radius: 10.0,
     model_file: "armpeep", model_scale: 0.35,
+    weapon_sound: "cannon1", death_sound: "xplosml2",
 };
 
 const RAIDER_STATS: UnitStats = UnitStats {
@@ -99,6 +103,7 @@ const RAIDER_STATS: UnitStats = UnitStats {
     metal_cost: 110.0, energy_cost: 600.0, build_time: 10.0,
     sight_range: 250.0, radius: 12.0,
     model_file: "armflash", model_scale: 0.35,
+    weapon_sound: "flashemg", death_sound: "xplosml2",
 };
 
 const TANK_STATS: UnitStats = UnitStats {
@@ -108,6 +113,7 @@ const TANK_STATS: UnitStats = UnitStats {
     metal_cost: 225.0, energy_cost: 1500.0, build_time: 15.0,
     sight_range: 250.0, radius: 14.0,
     model_file: "armstump", model_scale: 0.35,
+    weapon_sound: "cannon1", death_sound: "xplomed2",
 };
 
 const ASSAULT_STATS: UnitStats = UnitStats {
@@ -117,6 +123,7 @@ const ASSAULT_STATS: UnitStats = UnitStats {
     metal_cost: 400.0, energy_cost: 4000.0, build_time: 20.0,
     sight_range: 250.0, radius: 16.0,
     model_file: "armbull", model_scale: 0.35,
+    weapon_sound: "cannhvy1", death_sound: "xplomed2",
 };
 
 const ARTILLERY_STATS: UnitStats = UnitStats {
@@ -126,6 +133,7 @@ const ARTILLERY_STATS: UnitStats = UnitStats {
     metal_cost: 130.0, energy_cost: 1000.0, build_time: 12.0,
     sight_range: 250.0, radius: 13.0,
     model_file: "armham", model_scale: 0.35,
+    weapon_sound: "cannon1", death_sound: "xplosml2",
 };
 
 // --- Building Stats Table ---
@@ -142,6 +150,7 @@ pub struct BuildingStats {
     pub sight_range: f32,
     pub model_file: &'static str,
     pub model_scale: f32,
+    pub weapon_sound: &'static str,
 }
 
 const EXTRACTOR_STATS: BuildingStats = BuildingStats {
@@ -150,6 +159,7 @@ const EXTRACTOR_STATS: BuildingStats = BuildingStats {
     attack_damage: 0.0, attack_range: 0.0, attack_cooldown: 999.0,
     sight_range: 200.0,
     model_file: "armmex", model_scale: 0.5,
+    weapon_sound: "",
 };
 
 const SOLAR_STATS: BuildingStats = BuildingStats {
@@ -158,6 +168,7 @@ const SOLAR_STATS: BuildingStats = BuildingStats {
     attack_damage: 0.0, attack_range: 0.0, attack_cooldown: 999.0,
     sight_range: 200.0,
     model_file: "armsolar", model_scale: 0.5,
+    weapon_sound: "",
 };
 
 const FACTORY_STATS: BuildingStats = BuildingStats {
@@ -166,6 +177,7 @@ const FACTORY_STATS: BuildingStats = BuildingStats {
     attack_damage: 0.0, attack_range: 0.0, attack_cooldown: 999.0,
     sight_range: 200.0,
     model_file: "armlab", model_scale: 0.5,
+    weapon_sound: "",
 };
 
 const LLT_STATS: BuildingStats = BuildingStats {
@@ -174,6 +186,7 @@ const LLT_STATS: BuildingStats = BuildingStats {
     attack_damage: 25.0, attack_range: 250.0, attack_cooldown: 0.6,
     sight_range: 200.0,
     model_file: "armllt", model_scale: 0.5,
+    weapon_sound: "lasrfir3",
 };
 
 const WALL_STATS: BuildingStats = BuildingStats {
@@ -182,6 +195,7 @@ const WALL_STATS: BuildingStats = BuildingStats {
     attack_damage: 0.0, attack_range: 0.0, attack_cooldown: 999.0,
     sight_range: 200.0,
     model_file: "armdrag", model_scale: 0.5,
+    weapon_sound: "",
 };
 
 const RADAR_STATS: BuildingStats = BuildingStats {
@@ -190,6 +204,7 @@ const RADAR_STATS: BuildingStats = BuildingStats {
     attack_damage: 0.0, attack_range: 0.0, attack_cooldown: 999.0,
     sight_range: 200.0,
     model_file: "armrad", model_scale: 0.5,
+    weapon_sound: "",
 };
 
 // --- Components ---
@@ -205,6 +220,8 @@ pub struct Unit {
     pub cooldown_timer: f32,
     pub min_attack_range: f32,
     pub radius: f32,
+    pub weapon_sound: &'static str,
+    pub death_sound: &'static str,
 }
 
 #[derive(Component)]
@@ -522,6 +539,17 @@ impl ModelLibrary {
     }
 }
 
+#[derive(Resource)]
+pub struct SoundLibrary {
+    pub sounds: HashMap<String, Handle<AudioSource>>,
+}
+
+impl SoundLibrary {
+    pub fn get(&self, name: &str) -> Option<&Handle<AudioSource>> {
+        self.sounds.get(name)
+    }
+}
+
 // --- Pathfinding ---
 
 #[derive(Component, Clone, Copy, PartialEq, Debug)]
@@ -544,6 +572,8 @@ pub struct Path {
     pub waypoints: Vec<Vec2>, // game coords, ordered next→final
     pub grid_version: u32,    // for invalidation when NavGrid changes
     pub goal: Vec2,           // target position when path was computed
+    pub stuck_timer: f32,     // seconds spent making no progress toward next waypoint
+    pub last_dist_to_wp: f32, // last measured distance to next waypoint
 }
 
 #[derive(Resource)]

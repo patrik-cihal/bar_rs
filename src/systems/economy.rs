@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy::audio::{AudioPlayer, PlaybackSettings, Volume};
 
 use crate::spawning::*;
 use crate::types::*;
@@ -50,6 +51,7 @@ pub fn factory_production(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     models: Res<ModelLibrary>,
+    sounds: Res<SoundLibrary>,
     mut next_stable_id: ResMut<NextStableId>,
     mut stable_id_map: ResMut<StableIdMap>,
     time: Res<Time>,
@@ -99,6 +101,12 @@ pub fn factory_production(
                 &mut next_stable_id,
                 &mut stable_id_map,
             );
+            if let Some(handle) = sounds.get("unitready") {
+                commands.spawn((
+                    AudioPlayer::new(handle.clone()),
+                    PlaybackSettings::ONCE.with_volume(Volume::Linear(0.5)),
+                ));
+            }
         }
     }
 }

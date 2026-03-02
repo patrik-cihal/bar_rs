@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bevy = "0.18.0"
+bevy = { version = "0.18.0", features = ["wav"] }
 bevy_renet2 = { version = "0.13.1", features = ["serde", "native_transport"] }
 bincode = { version = "2", features = ["serde"] }
 serde = { version = "1.0.228", features = ["derive"] }

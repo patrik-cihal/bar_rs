@@ -34,6 +34,8 @@ pub fn spawn_unit(
         cooldown_timer: 0.0,
         min_attack_range: s.min_attack_range,
         radius: s.radius,
+        weapon_sound: s.weapon_sound,
+        death_sound: s.death_sound,
     };
 
     let sid = StableId(next_stable_id.0);
@@ -165,6 +167,8 @@ pub fn spawn_building_entity(
                 cooldown_timer: 0.0,
                 min_attack_range: 0.0,
                 radius: 0.0,
+                weapon_sound: bs.weapon_sound,
+                death_sound: "xplosml2",
             },
             SightRange(bs.sight_range),
             TeamOwned(team),
@@ -209,6 +213,8 @@ pub fn spawn_building_entity(
                 cooldown_timer: 0.0,
                 min_attack_range: 0.0,
                 radius: 0.0,
+                weapon_sound: bs.weapon_sound,
+                death_sound: "xplosml2",
             },
             SightRange(bs.sight_range),
             TeamOwned(team),

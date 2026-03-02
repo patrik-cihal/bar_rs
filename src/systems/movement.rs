@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy::audio::{AudioPlayer, PlaybackSettings, Volume};
 
 use crate::types::*;
 
@@ -39,6 +40,8 @@ pub fn unit_movement(
                 let dist_to_wp = pos.distance(next_wp);
                 if dist_to_wp <= BUILD_GRID_SIZE * 0.5 {
                     path.waypoints.remove(0);
+                    path.stuck_timer = 0.0;
+                    path.last_dist_to_wp = f32::MAX;
                     // If more waypoints remain, move toward the new next one
                     if !path.waypoints.is_empty() {
                         let new_wp = path.waypoints[0];
@@ -51,6 +54,24 @@ pub fn unit_movement(
                     }
                     continue;
                 } else {
+                    // Stuck detection: skip waypoint if no progress for 1 second
+                    if dist_to_wp >= path.last_dist_to_wp - 0.5 {
+                        path.stuck_timer += dt;
+                    } else {
+                        path.stuck_timer = 0.0;
+                    }
+                    path.last_dist_to_wp = dist_to_wp;
+
+                    if path.stuck_timer > 1.0 {
+                        path.waypoints.remove(0);
+                        path.stuck_timer = 0.0;
+                        path.last_dist_to_wp = f32::MAX;
+                        if path.waypoints.is_empty() {
+                            remove_path.push(entity);
+                        }
+                        continue;
+                    }
+
                     let direction = (next_wp - pos).normalize_or_zero();
                     moves.push((entity, direction * unit.speed * dt));
                     continue;
@@ -122,6 +143,7 @@ pub fn building_construction(
     commanders: Query<(Entity, &Transform, Option<&BuildTarget>), (With<Commander>, Without<Building>)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    sounds: Res<SoundLibrary>,
     time: Res<Time>,
 ) {
     let dt = time.delta_secs();
@@ -156,6 +178,12 @@ pub fn building_construction(
                 building.built = true;
                 if let Some(cmd_entity) = builder_entity {
                     commands.entity(cmd_entity).remove::<BuildTarget>();
+                }
+                if let Some(handle) = sounds.get("build2") {
+                    commands.spawn((
+                        AudioPlayer::new(handle.clone()),
+                        PlaybackSettings::ONCE.with_volume(Volume::Linear(0.5)),
+                    ));
                 }
             }
 

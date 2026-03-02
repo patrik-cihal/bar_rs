@@ -275,8 +275,15 @@ pub fn pathfinding_system(
 
         // Check if existing path is still valid
         if let Some(mut path) = path_opt {
+            // Off-course check: if unit is >3 cells from next waypoint, force recompute
+            let off_course = if let Some(next_wp) = path.waypoints.first() {
+                pos.distance(*next_wp) > BUILD_GRID_SIZE * 3.0
+            } else {
+                false
+            };
+
             // Goal drift check: if target moved significantly, recompute
-            if path.goal.distance(goal) > BUILD_GRID_SIZE * 2.0 {
+            if off_course || path.goal.distance(goal) > BUILD_GRID_SIZE * 2.0 {
                 // Recompute below
             } else if path.grid_version == nav_grid.version {
                 // Path is current, keep it
@@ -301,6 +308,8 @@ pub fn pathfinding_system(
                 waypoints,
                 grid_version: nav_grid.version,
                 goal,
+                stuck_timer: 0.0,
+                last_dist_to_wp: f32::MAX,
             });
         } else {
             // No path found — remove Path so unit falls back to beeline
