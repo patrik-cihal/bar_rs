@@ -169,7 +169,7 @@ pub fn unit_selection(
                 if let Some(handle) = sounds.get("cmd-default-select") {
                     commands.spawn((
                         AudioPlayer::new(handle.clone()),
-                        PlaybackSettings::ONCE.with_volume(Volume::Linear(0.25)),
+                        PlaybackSettings::DESPAWN.with_volume(Volume::Linear(0.25)),
                     ));
                 }
             }
@@ -258,7 +258,7 @@ pub fn unit_commands(
             if let Some(handle) = sounds.get("cmd-attack") {
                 commands.spawn((
                     AudioPlayer::new(handle.clone()),
-                    PlaybackSettings::ONCE.with_volume(Volume::Linear(0.3)),
+                    PlaybackSettings::DESPAWN.with_volume(Volume::Linear(0.3)),
                 ));
             }
         } else if let Some(reclaim_sid) = target_reclaim {
@@ -275,7 +275,7 @@ pub fn unit_commands(
             if let Some(handle) = sounds.get("cmd-reclaim") {
                 commands.spawn((
                     AudioPlayer::new(handle.clone()),
-                    PlaybackSettings::ONCE.with_volume(Volume::Linear(0.3)),
+                    PlaybackSettings::DESPAWN.with_volume(Volume::Linear(0.3)),
                 ));
             }
             if !non_commanders.is_empty() {
@@ -293,7 +293,7 @@ pub fn unit_commands(
             if let Some(handle) = sounds.get("cmd-move-short") {
                 commands.spawn((
                     AudioPlayer::new(handle.clone()),
-                    PlaybackSettings::ONCE.with_volume(Volume::Linear(0.3)),
+                    PlaybackSettings::DESPAWN.with_volume(Volume::Linear(0.3)),
                 ));
             }
         }
@@ -437,7 +437,7 @@ pub fn building_placement(
         if let Some(handle) = sounds.get("cmd-build") {
             commands.spawn((
                 AudioPlayer::new(handle.clone()),
-                PlaybackSettings::ONCE.with_volume(Volume::Linear(0.4)),
+                PlaybackSettings::DESPAWN.with_volume(Volume::Linear(0.4)),
             ));
         }
 
@@ -530,7 +530,7 @@ pub fn dgun_input(
             if let Some(handle) = sounds.get("disigun1") {
                 commands.spawn((
                     AudioPlayer::new(handle.clone()),
-                    PlaybackSettings::ONCE.with_volume(Volume::Linear(0.7)),
+                    PlaybackSettings::DESPAWN.with_volume(Volume::Linear(0.7)),
                 ));
             }
 

@@ -52,6 +52,7 @@ pub fn factory_production(
     mut materials: ResMut<Assets<StandardMaterial>>,
     models: Res<ModelLibrary>,
     sounds: Res<SoundLibrary>,
+    local_player: Res<LocalPlayer>,
     mut next_stable_id: ResMut<NextStableId>,
     mut stable_id_map: ResMut<StableIdMap>,
     time: Res<Time>,
@@ -101,11 +102,13 @@ pub fn factory_production(
                 &mut next_stable_id,
                 &mut stable_id_map,
             );
-            if let Some(handle) = sounds.get("unitready") {
-                commands.spawn((
-                    AudioPlayer::new(handle.clone()),
-                    PlaybackSettings::ONCE.with_volume(Volume::Linear(0.5)),
-                ));
+            if team.0 == local_player.id {
+                if let Some(handle) = sounds.get("unitready") {
+                    commands.spawn((
+                        AudioPlayer::new(handle.clone()),
+                        PlaybackSettings::DESPAWN.with_volume(Volume::Linear(0.5)),
+                    ));
+                }
             }
         }
     }

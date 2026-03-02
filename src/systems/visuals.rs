@@ -18,7 +18,7 @@ pub fn death_explosion_system(
         if progress >= 1.0 {
             commands.entity(entity).despawn();
         } else {
-            let scale = explosion.max_radius * 2.0 / 10.0 * progress;
+            let scale = explosion.max_radius / 10.0 * progress;
             tf.scale = Vec3::splat(scale);
         }
     }

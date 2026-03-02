@@ -16,6 +16,9 @@ pub fn combat_system(
         Option<&Building>,
         Option<&StableId>,
     )>,
+    sight_units: Query<(&Transform, &SightRange, &TeamOwned), Without<Building>>,
+    camera_q: Query<&Transform, (With<Camera3d>, Without<Unit>, Without<Building>)>,
+    local_player: Res<LocalPlayer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     terrain: Res<TerrainHeightmap>,
@@ -24,6 +27,18 @@ pub fn combat_system(
     time: Res<Time>,
 ) {
     let dt = time.delta_secs();
+    let local_team = local_player.id;
+    let cam_pos = camera_q.single().map(|tf| game_xy(&tf.translation)).unwrap_or_default();
+
+    // Collect friendly sight sources for visibility-gated audio
+    let sight_sources: Vec<(Vec2, f32)> = sight_units
+        .iter()
+        .filter(|(_, _, t)| t.0 == local_team)
+        .map(|(tf, sr, _)| (game_xy(&tf.translation), sr.0))
+        .collect();
+    let is_visible = |pos: Vec2| -> bool {
+        sight_sources.iter().any(|(src, range)| src.distance(pos) <= *range)
+    };
 
     struct CombatInfo {
         entity: Entity,
@@ -114,13 +129,16 @@ pub fn combat_system(
                 is_dgun: false,
             },
         ));
-        // Weapon fire sound
-        if !weapon_sound.is_empty() {
-            if let Some(handle) = sounds.get(weapon_sound) {
-                commands.spawn((
-                    AudioPlayer::new(handle.clone()),
-                    PlaybackSettings::ONCE.with_volume(Volume::Linear(0.5)),
-                ));
+        // Weapon fire sound (visibility-gated + distance-attenuated)
+        if !weapon_sound.is_empty() && (team == local_team || is_visible(from_pos)) {
+            let vol = distance_volume(0.5, cam_pos.distance(from_pos));
+            if vol > 0.0 {
+                if let Some(handle) = sounds.get(weapon_sound) {
+                    commands.spawn((
+                        AudioPlayer::new(handle.clone()),
+                        PlaybackSettings::DESPAWN.with_volume(Volume::Linear(vol)),
+                    ));
+                }
             }
         }
         // Muzzle flash at shooter position
@@ -163,14 +181,17 @@ pub fn combat_system(
     }
 
     for (entity, pos, is_commander, metal_value, sid, death_sound) in &deaths {
-        // Death explosion sound
-        if !death_sound.is_empty() {
-            if let Some(handle) = sounds.get(*death_sound) {
-                let vol = if *is_commander { 0.9 } else if *death_sound == "xplomed2" { 0.7 } else { 0.6 };
-                commands.spawn((
-                    AudioPlayer::new(handle.clone()),
-                    PlaybackSettings::ONCE.with_volume(Volume::Linear(vol)),
-                ));
+        // Death explosion sound (visibility-gated + distance-attenuated)
+        if !death_sound.is_empty() && is_visible(*pos) {
+            let base_vol = if *is_commander { 0.9 } else if *death_sound == "xplomed2" { 0.7 } else { 0.6 };
+            let vol = distance_volume(base_vol, cam_pos.distance(*pos));
+            if vol > 0.0 {
+                if let Some(handle) = sounds.get(*death_sound) {
+                    commands.spawn((
+                        AudioPlayer::new(handle.clone()),
+                        PlaybackSettings::DESPAWN.with_volume(Volume::Linear(vol)),
+                    ));
+                }
             }
         }
         if *is_commander {

@@ -39,7 +39,7 @@ pub const BUILD_RANGE: f32 = 150.0;
 pub const DGUN_RANGE: f32 = 120.0;
 pub const DGUN_ENERGY_COST: f32 = 500.0;
 pub const COMMANDER_DEATH_DAMAGE: f32 = 500.0;
-pub const COMMANDER_DEATH_RADIUS: f32 = 200.0;
+pub const COMMANDER_DEATH_RADIUS: f32 = 120.0;
 pub const WRECKAGE_DECAY_TIME: f32 = 60.0;
 pub const RECLAIM_RANGE: f32 = 60.0;
 pub const RECLAIM_TIME: f32 = 2.0;
@@ -54,6 +54,25 @@ pub const COMMANDER_METAL_INCOME: f32 = 1.0;
 pub const COMMANDER_ENERGY_INCOME: f32 = 15.0;
 pub const RADAR_RANGE: f32 = 600.0;
 pub const NAV_GRID_SIZE: usize = 125; // MAP_SIZE 2000 / BUILD_GRID_SIZE 16
+
+// Sound attenuation (BAR-style inverse distance rolloff)
+pub const SOUND_REF_DISTANCE: f32 = 200.0; // full volume within this range
+pub const SOUND_MAX_DISTANCE: f32 = 1500.0; // silent beyond this range
+pub const SOUND_ROLLOFF: f32 = 1.4; // BAR weapon rolloff factor
+
+/// Calculate distance-attenuated volume (BAR-style inverse distance clamped model).
+/// Returns 0.0 if beyond max distance, base_volume if within reference distance,
+/// smooth rolloff in between.
+pub fn distance_volume(base_volume: f32, distance: f32) -> f32 {
+    if distance <= SOUND_REF_DISTANCE {
+        base_volume
+    } else if distance >= SOUND_MAX_DISTANCE {
+        0.0
+    } else {
+        let attenuation = SOUND_REF_DISTANCE / (SOUND_REF_DISTANCE + SOUND_ROLLOFF * (distance - SOUND_REF_DISTANCE));
+        base_volume * attenuation
+    }
+}
 
 // --- Unit Stats Table ---
 

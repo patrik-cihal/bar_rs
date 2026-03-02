@@ -43,6 +43,49 @@ const DIRS: [(i32, i32, u32); 8] = [
     (1, 1, 14), (-1, 1, 14), (1, -1, 14), (-1, -1, 14),
 ];
 
+/// Check line of sight between two game-coordinate positions on the nav grid.
+/// Samples every half grid cell along the line and checks passability.
+fn line_of_sight(nav_grid: &NavGrid, from: Vec2, to: Vec2, move_class: MoveClass) -> bool {
+    let dist = from.distance(to);
+    let step = BUILD_GRID_SIZE * 0.5;
+    let steps = (dist / step).ceil() as usize;
+    if steps == 0 {
+        return true;
+    }
+    for i in 0..=steps {
+        let t = i as f32 / steps as f32;
+        let p = from.lerp(to, t);
+        let (cx, cy) = nav_grid.game_to_cell(p.x, p.y);
+        if !nav_grid.is_passable(cx, cy, move_class) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Smooth a path by removing unnecessary intermediate waypoints using line-of-sight.
+/// Greedily finds the furthest visible waypoint from each anchor point.
+fn smooth_path(nav_grid: &NavGrid, waypoints: &mut Vec<Vec2>, start: Vec2, move_class: MoveClass) {
+    if waypoints.len() <= 1 {
+        return;
+    }
+    let mut result = Vec::new();
+    let mut anchor = start;
+    let mut i = 0;
+    while i < waypoints.len() {
+        let mut best = i;
+        for j in (i + 1)..waypoints.len() {
+            if line_of_sight(nav_grid, anchor, waypoints[j], move_class) {
+                best = j;
+            }
+        }
+        result.push(waypoints[best]);
+        anchor = waypoints[best];
+        i = best + 1;
+    }
+    *waypoints = result;
+}
+
 /// Find a path from start to goal on the nav grid.
 /// `stop_distance_cells` allows early termination when within N cells of goal.
 /// Returns waypoints in game coordinates (start excluded, goal included).
@@ -158,7 +201,7 @@ pub fn find_path(
     path_indices.reverse();
 
     // Convert to game coordinates, using goal for the final waypoint
-    let waypoints: Vec<Vec2> = path_indices
+    let mut waypoints: Vec<Vec2> = path_indices
         .iter()
         .enumerate()
         .map(|(i, &idx)| {
@@ -176,6 +219,7 @@ pub fn find_path(
     if waypoints.is_empty() {
         Some(vec![goal])
     } else {
+        smooth_path(nav_grid, &mut waypoints, start, move_class);
         Some(waypoints)
     }
 }
@@ -192,14 +236,17 @@ pub fn navgrid_sync_system(
         *cell = false;
     }
 
-    // Mark all built buildings
+    // Mark all built buildings (inflate by 1 cell on each side so paths
+    // keep units clear of building collision zones — largest unit radius is 20,
+    // and without inflation the clearance is only ~16 which causes collisions)
     for (tf, building) in &buildings {
         if !building.built {
             continue;
         }
         let pos = game_xy(&tf.translation);
         let size = building.building_type.stats().size;
-        nav_grid.mark_building(pos, size, true);
+        let padded = (size.0 + BUILD_GRID_SIZE * 2.0, size.1 + BUILD_GRID_SIZE * 2.0);
+        nav_grid.mark_building(pos, padded, true);
     }
 
     nav_grid.finish_sync();
@@ -282,12 +329,10 @@ pub fn pathfinding_system(
                 false
             };
 
-            // Goal drift check: if target moved significantly, recompute
-            if off_course || path.goal.distance(goal) > BUILD_GRID_SIZE * 2.0 {
-                // Recompute below
+            let needs_recompute = if off_course || path.goal.distance(goal) > BUILD_GRID_SIZE * 2.0 {
+                true
             } else if path.grid_version == nav_grid.version {
-                // Path is current, keep it
-                continue;
+                false
             } else {
                 // Grid changed — quick validation: check all waypoint cells still passable
                 let all_clear = path.waypoints.iter().all(|wp| {
@@ -296,13 +341,30 @@ pub fn pathfinding_system(
                 });
                 if all_clear {
                     path.grid_version = nav_grid.version;
-                    continue;
+                    false
+                } else {
+                    true
                 }
-                // Fall through to recompute
+            };
+
+            if !needs_recompute {
+                continue;
             }
+
+            // Recompute in-place (immediate, no deferred command delay)
+            if let Some(waypoints) = find_path(&nav_grid, pos, goal, *move_class, stop_cells) {
+                path.waypoints = waypoints;
+                path.grid_version = nav_grid.version;
+                path.goal = goal;
+                path.stuck_timer = 0.0;
+                path.last_dist_to_wp = f32::MAX;
+            } else {
+                commands.entity(entity).remove::<Path>();
+            }
+            continue;
         }
 
-        // Compute new path
+        // No existing path — create new one via commands
         if let Some(waypoints) = find_path(&nav_grid, pos, goal, *move_class, stop_cells) {
             commands.entity(entity).insert(Path {
                 waypoints,
@@ -311,9 +373,6 @@ pub fn pathfinding_system(
                 stuck_timer: 0.0,
                 last_dist_to_wp: f32::MAX,
             });
-        } else {
-            // No path found — remove Path so unit falls back to beeline
-            commands.entity(entity).remove::<Path>();
         }
     }
 }

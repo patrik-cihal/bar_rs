@@ -42,17 +42,15 @@ pub fn unit_movement(
                     path.waypoints.remove(0);
                     path.stuck_timer = 0.0;
                     path.last_dist_to_wp = f32::MAX;
-                    // If more waypoints remain, move toward the new next one
                     if !path.waypoints.is_empty() {
+                        // More waypoints — move toward the next one
                         let new_wp = path.waypoints[0];
                         let direction = (new_wp - pos).normalize_or_zero();
                         moves.push((entity, direction * unit.speed * dt));
+                        continue;
                     }
-                    // If waypoints exhausted, fall through to direct movement below
-                    if path.waypoints.is_empty() {
-                        remove_path.push(entity);
-                    }
-                    continue;
+                    // Waypoints exhausted — fall through to direct movement
+                    remove_path.push(entity);
                 } else {
                     // Stuck detection: skip waypoint if no progress for 1 second
                     if dist_to_wp >= path.last_dist_to_wp - 0.5 {
@@ -67,14 +65,16 @@ pub fn unit_movement(
                         path.stuck_timer = 0.0;
                         path.last_dist_to_wp = f32::MAX;
                         if path.waypoints.is_empty() {
+                            // All waypoints skipped — fall through to direct movement
                             remove_path.push(entity);
+                        } else {
+                            continue;
                         }
+                    } else {
+                        let direction = (next_wp - pos).normalize_or_zero();
+                        moves.push((entity, direction * unit.speed * dt));
                         continue;
                     }
-
-                    let direction = (next_wp - pos).normalize_or_zero();
-                    moves.push((entity, direction * unit.speed * dt));
-                    continue;
                 }
             }
         }
@@ -139,26 +139,28 @@ pub fn unit_movement(
 
 pub fn building_construction(
     mut commands: Commands,
-    mut buildings: Query<(Entity, &mut Building, &mut Transform)>,
-    commanders: Query<(Entity, &Transform, Option<&BuildTarget>), (With<Commander>, Without<Building>)>,
+    mut buildings: Query<(Entity, &mut Building, &mut Transform, &TeamOwned)>,
+    commanders: Query<(Entity, &Transform, Option<&BuildTarget>, &TeamOwned), (With<Commander>, Without<Building>)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     sounds: Res<SoundLibrary>,
+    local_player: Res<LocalPlayer>,
     time: Res<Time>,
 ) {
     let dt = time.delta_secs();
 
-    for (building_entity, mut building, mut building_tf) in &mut buildings {
+    for (building_entity, mut building, mut building_tf, building_team) in &mut buildings {
         if building.built {
             continue;
         }
 
         let building_pos = game_xy(&building_tf.translation);
+        let is_local = building_team.0 == local_player.id;
 
         // Check if any commander with BuildTarget pointing to this building is in range
         let mut builder_world_pos: Option<Vec3> = None;
         let mut builder_entity: Option<Entity> = None;
-        for (cmd_entity, cmd_tf, build_target) in &commanders {
+        for (cmd_entity, cmd_tf, build_target, _cmd_team) in &commanders {
             if let Some(BuildTarget(target)) = build_target {
                 if *target == building_entity {
                     let cmd_pos = game_xy(&cmd_tf.translation);
@@ -179,16 +181,28 @@ pub fn building_construction(
                 if let Some(cmd_entity) = builder_entity {
                     commands.entity(cmd_entity).remove::<BuildTarget>();
                 }
-                if let Some(handle) = sounds.get("build2") {
+                if is_local {
+                    if let Some(handle) = sounds.get("build2") {
+                        commands.spawn((
+                            AudioPlayer::new(handle.clone()),
+                            PlaybackSettings::DESPAWN.with_volume(Volume::Linear(0.5)),
+                        ));
+                    }
+                }
+            }
+
+            // Nano lath construction sound (~once per second)
+            let t = time.elapsed_secs();
+            if is_local && (t % 1.0) < dt {
+                if let Some(handle) = sounds.get("nanlath1") {
                     commands.spawn((
                         AudioPlayer::new(handle.clone()),
-                        PlaybackSettings::ONCE.with_volume(Volume::Linear(0.5)),
+                        PlaybackSettings::DESPAWN.with_volume(Volume::Linear(0.3)),
                     ));
                 }
             }
 
             // Spawn nano particles from commander to building (~8 per second)
-            let t = time.elapsed_secs();
             let spawn_interval = 0.12;
             let phase = (t / spawn_interval) as u32;
             if (t % spawn_interval) < dt {

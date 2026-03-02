@@ -7,7 +7,7 @@ mod types;
 use bevy::prelude::*;
 use bevy::render::batching::gpu_preprocessing::{GpuPreprocessingMode, GpuPreprocessingSupport};
 use bevy::render::RenderApp;
-use bevy::window::WindowResolution;
+use bevy::window::{PresentMode, WindowResolution};
 
 use networking::*;
 use setup::*;
@@ -22,6 +22,7 @@ fn main() {
             primary_window: Some(Window {
                 title: "Beyond All Reason - Bevy RTS".into(),
                 resolution: WindowResolution::from([1280u32, 720]),
+                present_mode: PresentMode::AutoNoVsync,
                 ..default()
             }),
             ..default()
