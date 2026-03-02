@@ -48,7 +48,7 @@ pub fn camera_movement(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut scroll_events: MessageReader<MouseWheel>,
     mut camera_q: Query<(&mut Transform, &mut Projection), With<Camera3d>>,
-    time: Res<Time>,
+    time: Res<Time<Real>>,
 ) {
     let Ok((mut transform, mut projection)) = camera_q.single_mut() else {
         return;

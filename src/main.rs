@@ -81,27 +81,31 @@ fn main() {
         }
         NetRole::Host { port } => {
             setup_host_networking(&mut app, *port);
+            app.init_resource::<MultiplayerReady>();
+            app.init_resource::<SyncHashes>();
+            // Chain: server events (detects connection) → network sync → lockstep gate
             app.add_systems(Update, (
                 host_server_events,
                 host_network_sync,
                 lockstep_gate_system,
-                desync_check_system,
-                desync_receive_system,
-            ));
+            ).chain());
+            app.add_systems(Update, (desync_check_system, desync_receive_system));
         }
         NetRole::Client { addr } => {
             setup_client_networking(&mut app, *addr);
+            app.init_resource::<MultiplayerReady>();
+            app.init_resource::<SyncHashes>();
+            // Chain: network sync (detects connection) → lockstep gate
             app.add_systems(Update, (
                 client_network_sync,
                 lockstep_gate_system,
-                desync_check_system,
-                desync_receive_system,
-            ));
+            ).chain());
+            app.add_systems(Update, (desync_check_system, desync_receive_system));
         }
     }
 
     // Game simulation — run at fixed 30Hz (FixedUpdate)
-    // apply_commands_system runs first, then simulation
+    // Only tick when commands are available (prevents desync from extra iterations)
     app.add_systems(
         FixedUpdate,
         (
@@ -110,7 +114,8 @@ fn main() {
             building_construction,
             terrain_follow_system,
         )
-            .chain(),
+            .chain()
+            .run_if(simulation_ready),
     );
     app.add_systems(
         FixedUpdate,
@@ -124,7 +129,8 @@ fn main() {
             unit_collision_system,
             building_collision_system,
             win_lose_check,
-        ),
+        )
+            .run_if(simulation_ready),
     );
 
     // Visual systems — run at render rate (Update)

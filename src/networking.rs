@@ -15,6 +15,18 @@ use crate::types::*;
 const PROTOCOL_ID: u64 = 0xBA4_4057;
 const INPUT_DELAY: u64 = 3; // 3 ticks (~100ms at 30Hz)
 
+/// Run condition: only run FixedUpdate simulation when commands are available
+/// for the current tick (or in singleplayer mode where commands are always pushed).
+pub fn simulation_ready(
+    command_buffer: Res<CommandBuffer>,
+    net_role: Res<NetRole>,
+) -> bool {
+    match *net_role {
+        NetRole::Singleplayer => true,
+        _ => command_buffer.has_commands_for_tick(command_buffer.current_tick),
+    }
+}
+
 // --- Network Role ---
 
 #[derive(Resource, Clone, Debug, PartialEq)]
@@ -172,6 +184,23 @@ pub fn parse_cli_args() -> NetRole {
     NetRole::Singleplayer
 }
 
+/// Tracks whether both players are connected and the game can start
+#[derive(Resource)]
+pub struct MultiplayerReady(pub bool);
+
+impl Default for MultiplayerReady {
+    fn default() -> Self {
+        Self(false)
+    }
+}
+
+fn preseed_command_buffer(command_buffer: &mut CommandBuffer) {
+    for tick in 0..INPUT_DELAY {
+        command_buffer.pending.entry((tick, 0)).or_default();
+        command_buffer.pending.entry((tick, 1)).or_default();
+    }
+}
+
 // --- Network Setup ---
 
 pub fn setup_host_networking(app: &mut App, port: u16) {
@@ -248,11 +277,18 @@ pub fn singleplayer_command_flush(
 /// Host: handle server events (connection/disconnection)
 pub fn host_server_events(
     mut server_events: MessageReader<ServerEvent>,
+    mut ready: ResMut<MultiplayerReady>,
+    mut command_buffer: ResMut<CommandBuffer>,
 ) {
     for event in server_events.read() {
         match event {
             ServerEvent::ClientConnected { client_id } => {
                 info!("Client {} connected", client_id);
+                if !ready.0 {
+                    ready.0 = true;
+                    preseed_command_buffer(&mut command_buffer);
+                    info!("Game starting!");
+                }
             }
             ServerEvent::ClientDisconnected { client_id, reason } => {
                 info!("Client {} disconnected: {:?}", client_id, reason);
@@ -267,7 +303,24 @@ pub fn host_network_sync(
     mut command_buffer: ResMut<CommandBuffer>,
     mut server: ResMut<RenetServer>,
     local_player: Res<LocalPlayer>,
+    ready: Res<MultiplayerReady>,
 ) {
+    // Always drain incoming messages (even before ready) so renet doesn't stall
+    let mut received: Vec<TickInput> = Vec::new();
+    for client_id in server.clients_id() {
+        while let Some(message) = server.receive_message(client_id, DefaultChannel::ReliableOrdered) {
+            if let Some(remote_input) = decode_tick_input(&message) {
+                received.push(remote_input);
+            }
+        }
+    }
+
+    if !ready.0 {
+        // Discard local commands while waiting for connection
+        local_commands.commands.clear();
+        return;
+    }
+
     let cmds = std::mem::take(&mut local_commands.commands);
     let local_tick = command_buffer.current_tick + INPUT_DELAY;
 
@@ -287,25 +340,15 @@ pub fn host_network_sync(
     let encoded = encode_tick_input(&local_input);
     server.broadcast_message(DefaultChannel::ReliableOrdered, encoded);
 
-    // Receive remote client's commands
-    for client_id in server.clients_id() {
-        while let Some(message) = server.receive_message(client_id, DefaultChannel::ReliableOrdered) {
-            if let Some(remote_input) = decode_tick_input(&message) {
-                // Store remote commands
-                command_buffer.pending
-                    .entry((remote_input.tick, remote_input.player))
-                    .or_default()
-                    .extend(remote_input.commands.clone());
-
-                // Relay remote commands back to all clients
-                let relay = encode_tick_input(&remote_input);
-                server.broadcast_message(DefaultChannel::ReliableOrdered, relay);
-            }
-        }
+    // Store received remote commands
+    for remote_input in received {
+        let relay = encode_tick_input(&remote_input);
+        command_buffer.pending
+            .entry((remote_input.tick, remote_input.player))
+            .or_default()
+            .extend(remote_input.commands);
+        server.broadcast_message(DefaultChannel::ReliableOrdered, relay);
     }
-
-    // Ensure host's tick entry exists
-    command_buffer.pending.entry((local_tick, 0)).or_default();
 }
 
 /// Client: send local commands and receive commands from host
@@ -314,7 +357,20 @@ pub fn client_network_sync(
     mut command_buffer: ResMut<CommandBuffer>,
     mut client: ResMut<RenetClient>,
     local_player: Res<LocalPlayer>,
+    mut ready: ResMut<MultiplayerReady>,
 ) {
+    if !client.is_connected() {
+        local_commands.commands.clear();
+        return;
+    }
+
+    // Detect connection and preseed
+    if !ready.0 {
+        ready.0 = true;
+        preseed_command_buffer(&mut command_buffer);
+        info!("Connected to host, game starting!");
+    }
+
     let cmds = std::mem::take(&mut local_commands.commands);
     let local_tick = command_buffer.current_tick + INPUT_DELAY;
 
@@ -333,23 +389,26 @@ pub fn client_network_sync(
         .or_default()
         .extend(local_input.commands);
 
-    // Receive commands from host
+    // Receive commands from host (skip own player to avoid duplicates from relay)
     while let Some(message) = client.receive_message(DefaultChannel::ReliableOrdered) {
         if let Some(remote_input) = decode_tick_input(&message) {
-            command_buffer.pending
-                .entry((remote_input.tick, remote_input.player))
-                .or_default()
-                .extend(remote_input.commands);
+            if remote_input.player != local_player.id {
+                command_buffer.pending
+                    .entry((remote_input.tick, remote_input.player))
+                    .or_default()
+                    .extend(remote_input.commands);
+            }
         }
     }
 }
 
-/// Gate the simulation: pause virtual time when waiting for remote input
+/// Gate the simulation: pause virtual time when waiting for connection or remote input
 pub fn lockstep_gate_system(
     command_buffer: Res<CommandBuffer>,
+    ready: Res<MultiplayerReady>,
     mut time: ResMut<Time<Virtual>>,
 ) {
-    if !command_buffer.has_commands_for_tick(command_buffer.current_tick) {
+    if !ready.0 || !command_buffer.has_commands_for_tick(command_buffer.current_tick) {
         time.pause();
     } else {
         time.unpause();
@@ -507,13 +566,34 @@ pub fn apply_commands_system(
     command_buffer.current_tick += 1;
 }
 
-// --- Desync Detection (Phase 6) ---
+// --- Desync Detection ---
 
-/// Hash game state for desync detection
+/// Stores local and remote hashes keyed by tick for proper comparison
+#[derive(Resource, Default)]
+pub struct SyncHashes {
+    pub local: HashMap<u64, u64>,
+    pub remote: HashMap<u64, u64>,
+}
+
+fn compute_state_hash(units: &Query<(&StableId, &Transform, &Unit)>) -> u64 {
+    let mut sorted: Vec<_> = units.iter().collect();
+    sorted.sort_by_key(|(sid, _, _)| sid.0);
+    let mut hash: u64 = 0;
+    for (sid, tf, unit) in &sorted {
+        hash = hash.wrapping_mul(31).wrapping_add(sid.0);
+        hash = hash.wrapping_mul(31).wrapping_add((tf.translation.x * 100.0) as u64);
+        hash = hash.wrapping_mul(31).wrapping_add((tf.translation.z * 100.0) as u64);
+        hash = hash.wrapping_mul(31).wrapping_add((unit.hp * 100.0) as u64);
+    }
+    hash
+}
+
+/// Compute local hash and send it; also compare any matching remote hashes
 pub fn desync_check_system(
     command_buffer: Res<CommandBuffer>,
     units: Query<(&StableId, &Transform, &Unit)>,
     net_role: Res<NetRole>,
+    mut sync_hashes: ResMut<SyncHashes>,
     mut server: Option<ResMut<RenetServer>>,
     mut client: Option<ResMut<RenetClient>>,
 ) {
@@ -526,17 +606,8 @@ pub fn desync_check_system(
         return;
     }
 
-    // Compute simple hash of game state
-    let mut sorted: Vec<_> = units.iter().collect();
-    sorted.sort_by_key(|(sid, _, _)| sid.0);
-
-    let mut hash: u64 = 0;
-    for (sid, tf, unit) in &sorted {
-        hash = hash.wrapping_mul(31).wrapping_add(sid.0);
-        hash = hash.wrapping_mul(31).wrapping_add((tf.translation.x * 100.0) as u64);
-        hash = hash.wrapping_mul(31).wrapping_add((tf.translation.z * 100.0) as u64);
-        hash = hash.wrapping_mul(31).wrapping_add((unit.hp * 100.0) as u64);
-    }
+    let hash = compute_state_hash(&units);
+    sync_hashes.local.insert(tick, hash);
 
     let msg = format!("SYNC:{}:{}", tick, hash);
     let bytes: Vec<u8> = msg.into_bytes();
@@ -546,13 +617,22 @@ pub fn desync_check_system(
     } else if let Some(ref mut client) = client {
         client.send_message(DefaultChannel::Unreliable, bytes);
     }
+
+    // Compare against remote hash for the same tick (if we have it)
+    if let Some(&remote_hash) = sync_hashes.remote.get(&tick) {
+        if hash != remote_hash {
+            warn!("DESYNC at tick {}: local={} remote={}", tick, hash, remote_hash);
+        }
+        sync_hashes.local.remove(&tick);
+        sync_hashes.remote.remove(&tick);
+    }
 }
 
-/// Receive and check desync hashes
+/// Receive remote hashes and compare against stored local hashes
 pub fn desync_receive_system(
+    mut sync_hashes: ResMut<SyncHashes>,
     mut server: Option<ResMut<RenetServer>>,
     mut client: Option<ResMut<RenetClient>>,
-    units: Query<(&StableId, &Transform, &Unit)>,
 ) {
     let mut remote_msgs: Vec<String> = Vec::new();
 
@@ -577,21 +657,23 @@ pub fn desync_receive_system(
             let parts: Vec<&str> = rest.split(':').collect();
             if parts.len() == 2 {
                 if let (Ok(tick), Ok(remote_hash)) = (parts[0].parse::<u64>(), parts[1].parse::<u64>()) {
-                    let mut sorted: Vec<_> = units.iter().collect();
-                    sorted.sort_by_key(|(sid, _, _)| sid.0);
-                    let mut local_hash: u64 = 0;
-                    for (sid, tf, unit) in &sorted {
-                        local_hash = local_hash.wrapping_mul(31).wrapping_add(sid.0);
-                        local_hash = local_hash.wrapping_mul(31).wrapping_add((tf.translation.x * 100.0) as u64);
-                        local_hash = local_hash.wrapping_mul(31).wrapping_add((tf.translation.z * 100.0) as u64);
-                        local_hash = local_hash.wrapping_mul(31).wrapping_add((unit.hp * 100.0) as u64);
-                    }
-
-                    if local_hash != remote_hash {
-                        warn!("DESYNC at tick {}: local={} remote={}", tick, local_hash, remote_hash);
+                    // Compare against local hash if we already computed it for this tick
+                    if let Some(&local_hash) = sync_hashes.local.get(&tick) {
+                        if local_hash != remote_hash {
+                            warn!("DESYNC at tick {}: local={} remote={}", tick, local_hash, remote_hash);
+                        }
+                        sync_hashes.local.remove(&tick);
+                    } else {
+                        // Store for later comparison when we reach this tick
+                        sync_hashes.remote.insert(tick, remote_hash);
                     }
                 }
             }
         }
     }
+
+    // Clean up old entries (more than 300 ticks behind)
+    let cutoff = sync_hashes.local.keys().copied().max().unwrap_or(0).saturating_sub(300);
+    sync_hashes.local.retain(|&tick, _| tick >= cutoff);
+    sync_hashes.remote.retain(|&tick, _| tick >= cutoff);
 }
