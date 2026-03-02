@@ -93,21 +93,39 @@ pub fn combat_system(
         } else {
             Color::srgb(1.0, 0.6, 0.3)
         };
+        let spawn_pos = game_pos(from_pos.x, from_pos.y, terrain.height_at(from_pos.x, from_pos.y) + 1.5);
         commands.spawn((
-            Mesh3d(meshes.add(Sphere::new(PROJECTILE_SIZE / 2.0))),
+            Mesh3d(meshes.add(Capsule3d::new(1.5, 5.0))),
             MeshMaterial3d(materials.add(StandardMaterial {
                 base_color: color,
-                emissive: LinearRgba::from(color) * 3.0,
+                emissive: LinearRgba::from(color) * 5.0,
                 unlit: true,
                 ..default()
             })),
-            Transform::from_translation(game_pos(from_pos.x, from_pos.y, terrain.height_at(from_pos.x, from_pos.y) + 1.5)),
+            Transform::from_translation(spawn_pos),
             Projectile {
                 target,
                 damage,
                 speed: PROJECTILE_SPEED,
                 is_dgun: false,
             },
+        ));
+        // Muzzle flash at shooter position
+        let flash_color = if team == 0 {
+            LinearRgba::new(2.0, 4.0, 8.0, 1.0)
+        } else {
+            LinearRgba::new(8.0, 4.0, 1.0, 1.0)
+        };
+        commands.spawn((
+            Mesh3d(meshes.add(Sphere::new(3.0))),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: Color::WHITE,
+                emissive: flash_color,
+                unlit: true,
+                ..default()
+            })),
+            Transform::from_translation(spawn_pos),
+            MuzzleFlash { lifetime: 0.1 },
         ));
     }
 
@@ -175,6 +193,43 @@ pub fn combat_system(
             },
         ));
 
+        // Explosion particles — 8 debris sparks with deterministic spread
+        let death_height = terrain.height_at(pos.x, pos.y) + 2.0;
+        let particle_emissive = if deaths.iter().position(|d| d.0 == *entity).unwrap_or(0) % 2 == 0 {
+            LinearRgba::new(1.0, 3.0, 5.0, 1.0) // cyan sparks
+        } else {
+            LinearRgba::new(5.0, 3.0, 0.5, 1.0) // orange sparks
+        };
+        let stable_seed = sid.unwrap_or(entity.to_bits());
+        for i in 0..8u64 {
+            let angle = (stable_seed.wrapping_add(i).wrapping_mul(2654435761)) as f32 / u32::MAX as f32 * std::f32::consts::TAU;
+            let speed = 40.0 + (i as f32) * 8.0;
+            let velocity = Vec3::new(angle.cos() * speed, 30.0 + (i as f32) * 5.0, angle.sin() * speed);
+            commands.spawn((
+                Mesh3d(meshes.add(Sphere::new(1.5))),
+                MeshMaterial3d(materials.add(StandardMaterial {
+                    base_color: Color::WHITE,
+                    emissive: particle_emissive,
+                    unlit: true,
+                    ..default()
+                })),
+                Transform::from_translation(game_pos(pos.x, pos.y, death_height)),
+                ExplosionParticle { velocity, lifetime: 0.6 + (i as f32) * 0.05 },
+            ));
+        }
+        // Death flash
+        commands.spawn((
+            Mesh3d(meshes.add(Sphere::new(8.0))),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: Color::WHITE,
+                emissive: LinearRgba::new(10.0, 8.0, 3.0, 1.0),
+                unlit: true,
+                ..default()
+            })),
+            Transform::from_translation(game_pos(pos.x, pos.y, death_height)),
+            MuzzleFlash { lifetime: 0.15 },
+        ));
+
         if let Some(sid) = sid {
             stable_id_map.remove(*sid);
         }
@@ -219,6 +274,9 @@ pub fn projectile_system(
         } else {
             proj_tf.translation.x += direction.x * move_dist;
             proj_tf.translation.z -= direction.y * move_dist; // game +Y = world -Z
+            // Orient capsule in travel direction
+            let look_target = proj_tf.translation + Vec3::new(direction.x, 0.0, -direction.y) * 10.0;
+            proj_tf.look_at(look_target, Vec3::Y);
         }
     }
 }

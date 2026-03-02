@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use bevy::light::{CascadeShadowConfigBuilder, GlobalAmbientLight};
 use bevy::mesh::{Indices, VertexAttributeValues, PrimitiveTopology};
+use bevy::post_process::bloom::Bloom;
 use bevy::render::view::NoIndirectDrawing;
 use std::collections::HashMap;
 
@@ -22,6 +23,7 @@ pub fn setup_camera(mut commands: Commands) {
             ..OrthographicProjection::default_3d()
         }),
         Transform::from_translation(eye).looking_at(target, Vec3::Y),
+        Bloom { intensity: 0.15, ..Bloom::NATURAL },
         NoIndirectDrawing,
     ));
 
@@ -132,8 +134,8 @@ pub fn setup_map(
         commands.spawn((
             Mesh3d(meshes.add(Cuboid::new(20.0, 2.0, 20.0))),
             MeshMaterial3d(materials.add(StandardMaterial {
-                base_color: Color::srgb(0.6, 0.6, 0.6),
-                unlit: false,
+                base_color: Color::srgb(0.5, 0.7, 0.9),
+                emissive: LinearRgba::new(0.8, 1.2, 2.0, 1.0),
                 ..default()
             })),
             Transform::from_translation(game_pos(pos.x, pos.y, terrain.height_at(pos.x, pos.y)))
@@ -262,8 +264,10 @@ pub fn setup_map(
         );
     }
 
+    let nav_grid = NavGrid::new(&terrain);
     commands.insert_resource(model_library);
     commands.insert_resource(terrain);
+    commands.insert_resource(nav_grid);
 
     // Build ghost entity (invisible initially) — flat 3D quad
     commands.spawn((

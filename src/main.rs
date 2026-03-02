@@ -55,6 +55,7 @@ fn main() {
         .init_resource::<DGunMode>()
         .init_resource::<LocalCommands>()
         .init_resource::<CommandBuffer>()
+        .init_resource::<AiState>()
         .insert_resource(net_role.clone())
         .add_systems(Startup, (setup_camera, setup_map, setup_hud));
 
@@ -77,7 +78,7 @@ fn main() {
     // Network sync or singleplayer command flush (runs in Update, before FixedUpdate)
     match &net_role {
         NetRole::Singleplayer => {
-            app.add_systems(Update, singleplayer_command_flush);
+            app.add_systems(Update, (singleplayer_command_flush, ai_system).chain());
         }
         NetRole::Host { port } => {
             setup_host_networking(&mut app, *port);
@@ -110,6 +111,8 @@ fn main() {
         FixedUpdate,
         (
             apply_commands_system,
+            navgrid_sync_system,
+            pathfinding_system,
             unit_movement,
             building_construction,
             terrain_follow_system,
@@ -141,6 +144,8 @@ fn main() {
             fog_overlay_system,
             nano_particle_system,
             death_explosion_system,
+            explosion_particle_system,
+            muzzle_flash_system,
             health_bar_system,
             selection_indicator_system,
             build_ghost_system,

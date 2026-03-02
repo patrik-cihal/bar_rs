@@ -59,20 +59,76 @@ pub fn health_bar_system(
 }
 
 pub fn selection_indicator_system(
-    selected_units: Query<&Transform, With<Selected>>,
+    selected_units: Query<(&Transform, &Unit), With<Selected>>,
+    visible_enemies: Query<(&Transform, &Unit, &Visibility, &TeamOwned), Without<Selected>>,
+    local_player: Res<LocalPlayer>,
     mut gizmos: Gizmos,
 ) {
-    for transform in &selected_units {
+    // Green circles for selected friendly units (radius scales with unit size)
+    for (transform, unit) in &selected_units {
         let pos = transform.translation;
-        // Draw circle on ground plane (Y = slight offset above ground)
         gizmos.circle(
             Isometry3d::new(
-                Vec3::new(pos.x, 0.2, pos.z),
+                Vec3::new(pos.x, pos.y + 0.2, pos.z),
                 Quat::from_rotation_x(std::f32::consts::FRAC_PI_2),
             ),
-            25.0,
+            unit.radius + 10.0,
             Color::srgb(0.0, 1.0, 0.0),
         );
+    }
+    // Red circles for visible enemy units
+    for (transform, unit, vis, team) in &visible_enemies {
+        if team.0 == local_player.id || *vis == Visibility::Hidden {
+            continue;
+        }
+        let pos = transform.translation;
+        gizmos.circle(
+            Isometry3d::new(
+                Vec3::new(pos.x, pos.y + 0.2, pos.z),
+                Quat::from_rotation_x(std::f32::consts::FRAC_PI_2),
+            ),
+            unit.radius + 8.0,
+            Color::srgb(1.0, 0.2, 0.2),
+        );
+    }
+}
+
+pub fn explosion_particle_system(
+    mut commands: Commands,
+    mut particles: Query<(Entity, &mut ExplosionParticle, &mut Transform)>,
+    time: Res<Time>,
+) {
+    let dt = time.delta_secs();
+    for (entity, mut particle, mut tf) in &mut particles {
+        particle.lifetime -= dt;
+        if particle.lifetime <= 0.0 {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        // Apply gravity
+        particle.velocity.y -= 80.0 * dt;
+        tf.translation += particle.velocity * dt;
+        // Scale down as lifetime decreases
+        let scale = (particle.lifetime / 0.8).clamp(0.1, 1.0);
+        tf.scale = Vec3::splat(scale);
+    }
+}
+
+pub fn muzzle_flash_system(
+    mut commands: Commands,
+    mut flashes: Query<(Entity, &mut MuzzleFlash, &mut Transform)>,
+    time: Res<Time>,
+) {
+    let dt = time.delta_secs();
+    for (entity, mut flash, mut tf) in &mut flashes {
+        flash.lifetime -= dt;
+        if flash.lifetime <= 0.0 {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        // Rapid shrink
+        let scale = (flash.lifetime / 0.15).clamp(0.0, 1.0);
+        tf.scale = Vec3::splat(scale);
     }
 }
 
@@ -236,14 +292,15 @@ pub fn hud_system(
 // --- Minimap ---
 
 pub fn minimap_system(
-    _gizmos: Gizmos,
-    player_units: Query<(&Transform, &TeamOwned), With<Unit>>,
-    enemy_units: Query<(&Transform, &Visibility, &TeamOwned), With<Unit>>,
+    mut commands: Commands,
+    units: Query<(&Transform, &TeamOwned, &Visibility), With<Unit>>,
     player_buildings: Query<(&Transform, &TeamOwned), (With<Building>, Without<Unit>)>,
-    metal_spots: Query<&Transform, (With<MetalSpot>, Without<Unit>, Without<Building>)>,
+    minimap_frame: Query<Entity, With<MinimapFrame>>,
+    existing_dots: Query<Entity, With<MinimapDot>>,
+    local_player: Res<LocalPlayer>,
     mouse: Res<ButtonInput<MouseButton>>,
     window_q: Query<&Window>,
-    mut camera_q: Query<&mut Transform, (With<Camera3d>, Without<Unit>, Without<Building>, Without<MetalSpot>)>,
+    mut camera_q: Query<&mut Transform, (With<Camera3d>, Without<Unit>, Without<Building>)>,
 ) {
     let Ok(window) = window_q.single() else { return };
     let window_h = window.resolution.height();
@@ -276,7 +333,66 @@ pub fn minimap_system(
         }
     }
 
-    let _ = (player_units, enemy_units, player_buildings, metal_spots, _gizmos);
+    // Despawn old minimap dots
+    for dot_entity in &existing_dots {
+        commands.entity(dot_entity).despawn();
+    }
+
+    let Ok(frame_entity) = minimap_frame.single() else { return };
+
+    // Spawn unit dots on minimap
+    for (tf, team, vis) in &units {
+        // Skip hidden enemies
+        if team.0 != local_player.id && *vis == Visibility::Hidden {
+            continue;
+        }
+        let game = game_xy(&tf.translation);
+        let rel_x = (game.x / MAP_SIZE).clamp(0.0, 1.0);
+        let rel_y = (game.y / MAP_SIZE).clamp(0.0, 1.0);
+        let color = if team.0 == local_player.id {
+            Color::srgb(0.3, 0.6, 1.0)
+        } else {
+            Color::srgb(1.0, 0.3, 0.3)
+        };
+        let dot = commands.spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(rel_x * MINIMAP_SIZE - 2.0),
+                bottom: Val::Px(rel_y * MINIMAP_SIZE - 2.0),
+                width: Val::Px(4.0),
+                height: Val::Px(4.0),
+                ..default()
+            },
+            BackgroundColor(color),
+            MinimapDot,
+        )).id();
+        commands.entity(frame_entity).add_child(dot);
+    }
+
+    // Building dots (yellow for own, darker for enemy)
+    for (tf, team) in &player_buildings {
+        let game = game_xy(&tf.translation);
+        let rel_x = (game.x / MAP_SIZE).clamp(0.0, 1.0);
+        let rel_y = (game.y / MAP_SIZE).clamp(0.0, 1.0);
+        let color = if team.0 == local_player.id {
+            Color::srgb(0.9, 0.9, 0.2)
+        } else {
+            Color::srgb(0.6, 0.2, 0.2)
+        };
+        let dot = commands.spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(rel_x * MINIMAP_SIZE - 2.5),
+                bottom: Val::Px(rel_y * MINIMAP_SIZE - 2.5),
+                width: Val::Px(5.0),
+                height: Val::Px(5.0),
+                ..default()
+            },
+            BackgroundColor(color),
+            MinimapDot,
+        )).id();
+        commands.entity(frame_entity).add_child(dot);
+    }
 }
 
 // --- Network Status HUD ---

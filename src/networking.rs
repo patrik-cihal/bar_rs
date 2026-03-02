@@ -445,7 +445,8 @@ pub fn apply_commands_system(
                                 .insert(MoveTarget(target_vec))
                                 .remove::<AttackTarget>()
                                 .remove::<ReclaimTarget>()
-                                .remove::<BuildTarget>();
+                                .remove::<BuildTarget>()
+                                .remove::<Path>();
                         }
                     }
                 }
@@ -457,7 +458,8 @@ pub fn apply_commands_system(
                                     .insert(AttackTarget(target_entity))
                                     .remove::<MoveTarget>()
                                     .remove::<ReclaimTarget>()
-                                    .remove::<BuildTarget>();
+                                    .remove::<BuildTarget>()
+                                    .remove::<Path>();
                             }
                         }
                     }
@@ -487,7 +489,8 @@ pub fn apply_commands_system(
                                 .insert(BuildTarget(building_entity))
                                 .remove::<MoveTarget>()
                                 .remove::<AttackTarget>()
-                                .remove::<ReclaimTarget>();
+                                .remove::<ReclaimTarget>()
+                                .remove::<Path>();
                         }
                     }
                 }
@@ -555,7 +558,8 @@ pub fn apply_commands_system(
                                 .insert(ReclaimTarget(target_entity))
                                 .remove::<MoveTarget>()
                                 .remove::<AttackTarget>()
-                                .remove::<BuildTarget>();
+                                .remove::<BuildTarget>()
+                                .remove::<Path>();
                         }
                     }
                 }
@@ -676,4 +680,310 @@ pub fn desync_receive_system(
     let cutoff = sync_hashes.local.keys().copied().max().unwrap_or(0).saturating_sub(300);
     sync_hashes.local.retain(|&tick, _| tick >= cutoff);
     sync_hashes.remote.retain(|&tick, _| tick >= cutoff);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- CommandBuffer tests ---
+
+    #[test]
+    fn empty_buffer_has_no_commands() {
+        let buf = CommandBuffer::default();
+        assert!(!buf.has_commands_for_tick(0));
+        assert!(!buf.has_commands_for_tick(1));
+        assert!(!buf.has_commands_for_tick(999));
+    }
+
+    #[test]
+    fn push_singleplayer_creates_entries_for_both_players() {
+        let mut buf = CommandBuffer::default();
+        buf.push_singleplayer(vec![GameCommand::MoveUnits {
+            unit_ids: vec![1],
+            target: (10.0, 20.0),
+        }]);
+        assert!(buf.has_commands_for_tick(0));
+        // Player 0 has the command
+        assert!(buf.pending.get(&(0, 0)).unwrap().len() == 1);
+        // Player 1 has an empty entry (AI)
+        assert!(buf.pending.get(&(0, 1)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn push_singleplayer_empty_commands() {
+        let mut buf = CommandBuffer::default();
+        buf.push_singleplayer(vec![]);
+        assert!(buf.has_commands_for_tick(0));
+        assert!(buf.pending.get(&(0, 0)).unwrap().is_empty());
+        assert!(buf.pending.get(&(0, 1)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn take_commands_removes_entry() {
+        let mut buf = CommandBuffer::default();
+        buf.push_singleplayer(vec![GameCommand::MoveUnits {
+            unit_ids: vec![1, 2],
+            target: (5.0, 5.0),
+        }]);
+
+        let cmds = buf.take_commands(0, 0);
+        assert_eq!(cmds.len(), 1);
+
+        // Second call returns empty
+        let cmds2 = buf.take_commands(0, 0);
+        assert!(cmds2.is_empty());
+
+        // Player 1 entry still exists
+        assert!(buf.pending.contains_key(&(0, 1)));
+    }
+
+    #[test]
+    fn take_commands_nonexistent_tick() {
+        let mut buf = CommandBuffer::default();
+        let cmds = buf.take_commands(42, 0);
+        assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn has_commands_requires_both_players() {
+        let mut buf = CommandBuffer::default();
+        buf.pending.entry((5, 0)).or_default();
+        assert!(!buf.has_commands_for_tick(5));
+
+        buf.pending.entry((5, 1)).or_default();
+        assert!(buf.has_commands_for_tick(5));
+    }
+
+    #[test]
+    fn preseed_fills_input_delay_ticks() {
+        let mut buf = CommandBuffer::default();
+        preseed_command_buffer(&mut buf);
+        for tick in 0..INPUT_DELAY {
+            assert!(
+                buf.has_commands_for_tick(tick),
+                "tick {} should have commands after preseed",
+                tick
+            );
+        }
+        assert!(!buf.has_commands_for_tick(INPUT_DELAY));
+    }
+
+    // --- BuildingType to_u8/from_u8 ---
+
+    #[test]
+    fn building_type_roundtrip() {
+        let variants = [
+            BuildingType::MetalExtractor,
+            BuildingType::SolarCollector,
+            BuildingType::Factory,
+            BuildingType::LLT,
+            BuildingType::Wall,
+            BuildingType::RadarTower,
+        ];
+        for bt in &variants {
+            let v = bt.to_u8();
+            let recovered = BuildingType::from_u8(v).expect("should round-trip");
+            assert_eq!(*bt, recovered);
+        }
+    }
+
+    #[test]
+    fn building_type_invalid_returns_none() {
+        assert!(BuildingType::from_u8(6).is_none());
+        assert!(BuildingType::from_u8(255).is_none());
+    }
+
+    // --- UnitType to_u8/from_u8 ---
+
+    #[test]
+    fn unit_type_roundtrip() {
+        let variants = [
+            UnitType::Scout,
+            UnitType::Raider,
+            UnitType::Tank,
+            UnitType::Assault,
+            UnitType::Artillery,
+        ];
+        for ut in &variants {
+            let v = ut.to_u8();
+            let recovered = UnitType::from_u8(v).expect("should round-trip");
+            assert_eq!(*ut, recovered);
+        }
+    }
+
+    #[test]
+    fn unit_type_invalid_returns_none() {
+        assert!(UnitType::from_u8(5).is_none());
+        assert!(UnitType::from_u8(255).is_none());
+    }
+
+    // --- Serialization round-trip ---
+
+    #[test]
+    fn encode_decode_move_command() {
+        let input = TickInput {
+            tick: 42,
+            player: 1,
+            commands: vec![GameCommand::MoveUnits {
+                unit_ids: vec![10, 20, 30],
+                target: (100.5, 200.5),
+            }],
+        };
+        let bytes = encode_tick_input(&input);
+        let decoded = decode_tick_input(&bytes).expect("should decode");
+        assert_eq!(decoded.tick, 42);
+        assert_eq!(decoded.player, 1);
+        assert_eq!(decoded.commands.len(), 1);
+        match &decoded.commands[0] {
+            GameCommand::MoveUnits { unit_ids, target } => {
+                assert_eq!(unit_ids, &[10, 20, 30]);
+                assert_eq!(*target, (100.5, 200.5));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn encode_decode_attack_command() {
+        let input = TickInput {
+            tick: 7,
+            player: 0,
+            commands: vec![GameCommand::AttackUnits {
+                unit_ids: vec![1],
+                target_id: 99,
+            }],
+        };
+        let bytes = encode_tick_input(&input);
+        let decoded = decode_tick_input(&bytes).unwrap();
+        match &decoded.commands[0] {
+            GameCommand::AttackUnits { unit_ids, target_id } => {
+                assert_eq!(unit_ids, &[1]);
+                assert_eq!(*target_id, 99);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn encode_decode_place_building() {
+        let input = TickInput {
+            tick: 0,
+            player: 0,
+            commands: vec![GameCommand::PlaceBuilding {
+                building_type: BuildingType::Factory.to_u8(),
+                position: (500.0, 600.0),
+                commander_ids: vec![1, 2],
+            }],
+        };
+        let bytes = encode_tick_input(&input);
+        let decoded = decode_tick_input(&bytes).unwrap();
+        match &decoded.commands[0] {
+            GameCommand::PlaceBuilding { building_type, position, commander_ids } => {
+                assert_eq!(BuildingType::from_u8(*building_type), Some(BuildingType::Factory));
+                assert_eq!(*position, (500.0, 600.0));
+                assert_eq!(commander_ids, &[1, 2]);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn encode_decode_queue_unit() {
+        let input = TickInput {
+            tick: 10,
+            player: 1,
+            commands: vec![GameCommand::QueueUnit {
+                factory_id: 55,
+                unit_type: UnitType::Artillery.to_u8(),
+            }],
+        };
+        let bytes = encode_tick_input(&input);
+        let decoded = decode_tick_input(&bytes).unwrap();
+        match &decoded.commands[0] {
+            GameCommand::QueueUnit { factory_id, unit_type } => {
+                assert_eq!(*factory_id, 55);
+                assert_eq!(UnitType::from_u8(*unit_type), Some(UnitType::Artillery));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn encode_decode_dgun() {
+        let input = TickInput {
+            tick: 3,
+            player: 0,
+            commands: vec![GameCommand::DGun {
+                commander_id: 1,
+                target_pos: (300.0, 400.0),
+            }],
+        };
+        let bytes = encode_tick_input(&input);
+        let decoded = decode_tick_input(&bytes).unwrap();
+        match &decoded.commands[0] {
+            GameCommand::DGun { commander_id, target_pos } => {
+                assert_eq!(*commander_id, 1);
+                assert_eq!(*target_pos, (300.0, 400.0));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn encode_decode_reclaim() {
+        let input = TickInput {
+            tick: 5,
+            player: 0,
+            commands: vec![GameCommand::Reclaim {
+                commander_id: 1,
+                target_id: 42,
+            }],
+        };
+        let bytes = encode_tick_input(&input);
+        let decoded = decode_tick_input(&bytes).unwrap();
+        match &decoded.commands[0] {
+            GameCommand::Reclaim { commander_id, target_id } => {
+                assert_eq!(*commander_id, 1);
+                assert_eq!(*target_id, 42);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn encode_decode_multiple_commands() {
+        let input = TickInput {
+            tick: 100,
+            player: 0,
+            commands: vec![
+                GameCommand::MoveUnits { unit_ids: vec![1], target: (0.0, 0.0) },
+                GameCommand::AttackUnits { unit_ids: vec![2], target_id: 3 },
+                GameCommand::DGun { commander_id: 1, target_pos: (50.0, 50.0) },
+            ],
+        };
+        let bytes = encode_tick_input(&input);
+        let decoded = decode_tick_input(&bytes).unwrap();
+        assert_eq!(decoded.commands.len(), 3);
+    }
+
+    #[test]
+    fn encode_decode_empty_commands() {
+        let input = TickInput {
+            tick: 0,
+            player: 0,
+            commands: vec![],
+        };
+        let bytes = encode_tick_input(&input);
+        let decoded = decode_tick_input(&bytes).unwrap();
+        assert_eq!(decoded.tick, 0);
+        assert!(decoded.commands.is_empty());
+    }
+
+    #[test]
+    fn decode_garbage_returns_none() {
+        assert!(decode_tick_input(&[]).is_none());
+        assert!(decode_tick_input(&[0xFF, 0xFE, 0xFD]).is_none());
+        assert!(decode_tick_input(b"not bincode data at all").is_none());
+    }
 }

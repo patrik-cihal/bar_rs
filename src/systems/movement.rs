@@ -6,7 +6,7 @@ use crate::types::*;
 
 pub fn unit_movement(
     mut commands: Commands,
-    mut units: Query<(Entity, &mut Transform, &Unit, Option<&MoveTarget>, Option<&AttackTarget>, Option<&ReclaimTarget>, Option<&BuildTarget>)>,
+    mut units: Query<(Entity, &mut Transform, &Unit, Option<&MoveTarget>, Option<&AttackTarget>, Option<&ReclaimTarget>, Option<&BuildTarget>, Option<&mut Path>)>,
     wreck_positions: Query<&Transform, (With<Wreckage>, Without<Unit>)>,
     feat_positions: Query<&Transform, (With<MapFeature>, Without<Unit>, Without<Wreckage>)>,
     time: Res<Time>,
@@ -15,7 +15,7 @@ pub fn unit_movement(
 
     let positions: Vec<(Entity, Vec2)> = units
         .iter()
-        .map(|(e, tf, _, _, _, _, _)| (e, game_xy(&tf.translation)))
+        .map(|(e, tf, _, _, _, _, _, _)| (e, game_xy(&tf.translation)))
         .collect();
 
     let pos_map: std::collections::HashMap<Entity, Vec2> =
@@ -23,23 +23,49 @@ pub fn unit_movement(
 
     let mut moves: Vec<(Entity, Vec2)> = Vec::new();
     let mut remove_move_target: Vec<Entity> = Vec::new();
+    let mut remove_path: Vec<Entity> = Vec::new();
 
-    for (entity, transform, unit, move_target, attack_target, reclaim_target, build_target) in &units {
+    for (entity, transform, unit, move_target, attack_target, reclaim_target, build_target, mut path_opt) in &mut units {
         if unit.speed == 0.0 {
             continue;
         }
 
         let pos = game_xy(&transform.translation);
 
+        // If unit has a path with waypoints, follow the next waypoint
+        if let Some(ref mut path) = path_opt {
+            if !path.waypoints.is_empty() {
+                let next_wp = path.waypoints[0];
+                let dist_to_wp = pos.distance(next_wp);
+                if dist_to_wp <= BUILD_GRID_SIZE * 0.5 {
+                    path.waypoints.remove(0);
+                    // If more waypoints remain, move toward the new next one
+                    if !path.waypoints.is_empty() {
+                        let new_wp = path.waypoints[0];
+                        let direction = (new_wp - pos).normalize_or_zero();
+                        moves.push((entity, direction * unit.speed * dt));
+                    }
+                    // If waypoints exhausted, fall through to direct movement below
+                    if path.waypoints.is_empty() {
+                        remove_path.push(entity);
+                    }
+                    continue;
+                } else {
+                    let direction = (next_wp - pos).normalize_or_zero();
+                    moves.push((entity, direction * unit.speed * dt));
+                    continue;
+                }
+            }
+        }
+
+        // No path / path exhausted — use direct movement (existing behavior)
         if let Some(BuildTarget(target_entity)) = build_target {
-            // Move toward building but stop at BUILD_RANGE
             if let Some(&tpos) = pos_map.get(target_entity) {
                 if pos.distance(tpos) > BUILD_RANGE * 0.9 {
                     let direction = (tpos - pos).normalize_or_zero();
                     moves.push((entity, direction * unit.speed * dt));
                 }
             } else {
-                // Building no longer exists
                 remove_move_target.push(entity);
             }
         } else if let Some(AttackTarget(target_entity)) = attack_target {
@@ -75,12 +101,15 @@ pub fn unit_movement(
     }
 
     for (entity, movement) in moves {
-        if let Ok((_, mut transform, _, _, _, _, _)) = units.get_mut(entity) {
+        if let Ok((_, mut transform, _, _, _, _, _, _)) = units.get_mut(entity) {
             transform.translation.x += movement.x;
             transform.translation.z -= movement.y; // game +Y = world -Z
         }
     }
 
+    for entity in remove_path {
+        commands.entity(entity).remove::<Path>();
+    }
     for entity in remove_move_target {
         commands.entity(entity).remove::<MoveTarget>();
         commands.entity(entity).remove::<BuildTarget>();

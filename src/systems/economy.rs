@@ -1,6 +1,5 @@
 use bevy::prelude::*;
 
-use crate::networking::NetRole;
 use crate::spawning::*;
 use crate::types::*;
 
@@ -53,11 +52,9 @@ pub fn factory_production(
     models: Res<ModelLibrary>,
     mut next_stable_id: ResMut<NextStableId>,
     mut stable_id_map: ResMut<StableIdMap>,
-    net_role: Res<NetRole>,
     time: Res<Time>,
 ) {
     let dt = time.delta_secs();
-    let is_multiplayer = !matches!(*net_role, NetRole::Singleplayer);
 
     for (mut factory, building, transform, team) in &mut factories {
         if !building.built {
@@ -66,65 +63,42 @@ pub fn factory_production(
 
         let team_id = team.0 as usize;
 
-        // In multiplayer, all teams use queue-based production
-        // In singleplayer, only team 0 uses queue; others auto-produce
-        if is_multiplayer || team_id == 0 {
-            // Queue-based production
-            if factory.queue.is_empty() {
+        // Queue-based production (AI fills the queue via QueueUnit commands)
+        if factory.queue.is_empty() {
+            continue;
+        }
+
+        let unit_type = factory.queue[0];
+        let us = unit_type.stats();
+
+        if factory.produce_timer == 0.0 {
+            if all_resources.teams[team_id].metal < us.metal_cost || all_resources.teams[team_id].energy < us.energy_cost {
                 continue;
             }
+            all_resources.teams[team_id].metal -= us.metal_cost;
+            all_resources.teams[team_id].energy -= us.energy_cost;
+            factory.current_build_time = us.build_time;
+        }
 
-            let unit_type = factory.queue[0];
-            let us = unit_type.stats();
+        factory.produce_timer += dt;
 
-            if factory.produce_timer == 0.0 {
-                if all_resources.teams[team_id].metal < us.metal_cost || all_resources.teams[team_id].energy < us.energy_cost {
-                    continue;
-                }
-                all_resources.teams[team_id].metal -= us.metal_cost;
-                all_resources.teams[team_id].energy -= us.energy_cost;
-                factory.current_build_time = us.build_time;
-            }
+        if factory.produce_timer >= factory.current_build_time {
+            factory.produce_timer = 0.0;
+            factory.queue.remove(0);
 
-            factory.produce_timer += dt;
-
-            if factory.produce_timer >= factory.current_build_time {
-                factory.produce_timer = 0.0;
-                factory.queue.remove(0);
-
-                let factory_pos = game_xy(&transform.translation);
-                let spawn_pos = factory_pos + Vec2::new(0.0, -60.0);
-                spawn_unit(
-                    &mut commands,
-                    &mut meshes,
-                    &mut materials,
-                    spawn_pos,
-                    team.0,
-                    Some(unit_type),
-                    &models,
-                    &mut next_stable_id,
-                    &mut stable_id_map,
-                );
-            }
-        } else {
-            // Singleplayer AI: auto-produce tanks
-            factory.produce_timer += dt;
-            if factory.produce_timer >= 5.0 {
-                factory.produce_timer = 0.0;
-                let factory_pos = game_xy(&transform.translation);
-                let spawn_pos = factory_pos + Vec2::new(0.0, -60.0);
-                spawn_unit(
-                    &mut commands,
-                    &mut meshes,
-                    &mut materials,
-                    spawn_pos,
-                    team.0,
-                    Some(UnitType::Tank),
-                    &models,
-                    &mut next_stable_id,
-                    &mut stable_id_map,
-                );
-            }
+            let factory_pos = game_xy(&transform.translation);
+            let spawn_pos = factory_pos + Vec2::new(0.0, -60.0);
+            spawn_unit(
+                &mut commands,
+                &mut meshes,
+                &mut materials,
+                spawn_pos,
+                team.0,
+                Some(unit_type),
+                &models,
+                &mut next_stable_id,
+                &mut stable_id_map,
+            );
         }
     }
 }

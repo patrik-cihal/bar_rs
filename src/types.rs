@@ -53,6 +53,7 @@ pub const SOLAR_INCOME: f32 = 12.0;
 pub const COMMANDER_METAL_INCOME: f32 = 1.0;
 pub const COMMANDER_ENERGY_INCOME: f32 = 15.0;
 pub const RADAR_RANGE: f32 = 600.0;
+pub const NAV_GRID_SIZE: usize = 125; // MAP_SIZE 2000 / BUILD_GRID_SIZE 16
 
 // --- Unit Stats Table ---
 
@@ -262,7 +263,7 @@ pub struct Building {
     pub build_time: f32,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum BuildingType {
     MetalExtractor,
     SolarCollector,
@@ -398,6 +399,20 @@ pub struct MinimapFrame;
 #[derive(Component)]
 pub struct FogOverlay;
 
+#[derive(Component)]
+pub struct ExplosionParticle {
+    pub velocity: Vec3,
+    pub lifetime: f32,
+}
+
+#[derive(Component)]
+pub struct MuzzleFlash {
+    pub lifetime: f32,
+}
+
+#[derive(Component)]
+pub struct MinimapDot;
+
 // --- Resources ---
 
 #[derive(Resource)]
@@ -504,6 +519,122 @@ impl ModelLibrary {
     pub fn get(&self, model_file: &str, team: u8) -> Option<&Handle<Scene>> {
         let key = format!("{}_{}", model_file, if team == 0 { "blue" } else { "red" });
         self.models.get(&key)
+    }
+}
+
+// --- Pathfinding ---
+
+#[derive(Component, Clone, Copy, PartialEq, Debug)]
+pub enum MoveClass {
+    Bot,     // Commander, Scout, Artillery — max slope 36°
+    Vehicle, // Raider, Tank, Assault — max slope 18°
+}
+
+impl MoveClass {
+    pub fn max_slope_degrees(&self) -> f32 {
+        match self {
+            MoveClass::Bot => 36.0,
+            MoveClass::Vehicle => 18.0,
+        }
+    }
+}
+
+#[derive(Component)]
+pub struct Path {
+    pub waypoints: Vec<Vec2>, // game coords, ordered next→final
+    pub grid_version: u32,    // for invalidation when NavGrid changes
+    pub goal: Vec2,           // target position when path was computed
+}
+
+#[derive(Resource)]
+pub struct NavGrid {
+    pub blocked: Vec<bool>,  // NAV_GRID_SIZE * NAV_GRID_SIZE
+    pub slope: Vec<f32>,     // slope angle in degrees per cell
+    pub version: u32,        // bumped when blocked state changes
+    prev_blocked: Vec<bool>, // for change detection
+}
+
+impl NavGrid {
+    pub fn new(terrain: &TerrainHeightmap) -> Self {
+        let total = NAV_GRID_SIZE * NAV_GRID_SIZE;
+        let mut slope = vec![0.0f32; total];
+
+        let cell_size = BUILD_GRID_SIZE;
+        for cy in 0..NAV_GRID_SIZE {
+            for cx in 0..NAV_GRID_SIZE {
+                let wx = cx as f32 * cell_size;
+                let wy = cy as f32 * cell_size;
+                // Sample 4 corners of the cell
+                let h00 = terrain.height_at(wx, wy);
+                let h10 = terrain.height_at(wx + cell_size, wy);
+                let h01 = terrain.height_at(wx, wy + cell_size);
+                let h11 = terrain.height_at(wx + cell_size, wy + cell_size);
+                let max_h = h00.max(h10).max(h01).max(h11);
+                let min_h = h00.min(h10).min(h01).min(h11);
+                let max_diff = max_h - min_h;
+                let slope_angle = (max_diff / cell_size).atan().to_degrees();
+                slope[cy * NAV_GRID_SIZE + cx] = slope_angle;
+            }
+        }
+
+        NavGrid {
+            blocked: vec![false; total],
+            slope,
+            version: 0,
+            prev_blocked: vec![false; total],
+        }
+    }
+
+    /// Convert game coordinates to grid cell indices
+    pub fn game_to_cell(&self, x: f32, y: f32) -> (usize, usize) {
+        let cx = ((x / BUILD_GRID_SIZE) as usize).min(NAV_GRID_SIZE - 1);
+        let cy = ((y / BUILD_GRID_SIZE) as usize).min(NAV_GRID_SIZE - 1);
+        (cx, cy)
+    }
+
+    /// Convert grid cell center to game coordinates
+    pub fn cell_to_game(&self, cx: usize, cy: usize) -> Vec2 {
+        Vec2::new(
+            cx as f32 * BUILD_GRID_SIZE + BUILD_GRID_SIZE * 0.5,
+            cy as f32 * BUILD_GRID_SIZE + BUILD_GRID_SIZE * 0.5,
+        )
+    }
+
+    /// Check if a cell is passable for the given movement class
+    pub fn is_passable(&self, cx: usize, cy: usize, move_class: MoveClass) -> bool {
+        if cx >= NAV_GRID_SIZE || cy >= NAV_GRID_SIZE {
+            return false;
+        }
+        let idx = cy * NAV_GRID_SIZE + cx;
+        if self.blocked[idx] {
+            return false;
+        }
+        self.slope[idx] <= move_class.max_slope_degrees()
+    }
+
+    /// Mark/unmark cells covered by a building footprint
+    pub fn mark_building(&mut self, center: Vec2, size: (f32, f32), blocked: bool) {
+        let half_x = size.0 * 0.5;
+        let half_y = size.1 * 0.5;
+        let min_x = ((center.x - half_x) / BUILD_GRID_SIZE).floor() as i32;
+        let max_x = ((center.x + half_x) / BUILD_GRID_SIZE).ceil() as i32;
+        let min_y = ((center.y - half_y) / BUILD_GRID_SIZE).floor() as i32;
+        let max_y = ((center.y + half_y) / BUILD_GRID_SIZE).ceil() as i32;
+        for cy in min_y..max_y {
+            for cx in min_x..max_x {
+                if cx >= 0 && cx < NAV_GRID_SIZE as i32 && cy >= 0 && cy < NAV_GRID_SIZE as i32 {
+                    self.blocked[(cy as usize) * NAV_GRID_SIZE + cx as usize] = blocked;
+                }
+            }
+        }
+    }
+
+    /// Swap blocked state and bump version if changed
+    pub fn finish_sync(&mut self) {
+        if self.blocked != self.prev_blocked {
+            self.version = self.version.wrapping_add(1);
+            self.prev_blocked.clone_from(&self.blocked);
+        }
     }
 }
 
@@ -748,5 +879,904 @@ impl TerrainHeightmap {
             }
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- Coordinate helpers ---
+
+    #[test]
+    fn game_pos_known_values() {
+        let v = game_pos(100.0, 200.0, 5.0);
+        assert_eq!(v.x, 100.0);
+        assert_eq!(v.y, 5.0);
+        assert_eq!(v.z, -200.0);
+    }
+
+    #[test]
+    fn game_xy_known_values() {
+        let v = game_xy(&Vec3::new(100.0, 5.0, -200.0));
+        assert_eq!(v.x, 100.0);
+        assert_eq!(v.y, 200.0);
+    }
+
+    #[test]
+    fn game_pos_game_xy_roundtrip() {
+        let cases = [
+            (0.0, 0.0),
+            (100.0, 200.0),
+            (-50.0, 300.0),
+            (1999.0, 1.0),
+        ];
+        for (x, y) in cases {
+            let world = game_pos(x, y, 0.0);
+            let back = game_xy(&world);
+            assert!(
+                (back.x - x).abs() < f32::EPSILON && (back.y - y).abs() < f32::EPSILON,
+                "roundtrip failed for ({}, {}): got ({}, {})",
+                x, y, back.x, back.y,
+            );
+        }
+    }
+
+    #[test]
+    fn game_pos_game_xy_roundtrip_with_layer() {
+        // Layer (height) is discarded by game_xy, but x/y should survive
+        let world = game_pos(42.0, 99.0, 15.0);
+        let back = game_xy(&world);
+        assert_eq!(back.x, 42.0);
+        assert_eq!(back.y, 99.0);
+    }
+
+    // --- snap_to_build_grid ---
+
+    #[test]
+    fn snap_to_grid_odd_cells() {
+        // Wall: 16x16 → 1 cell each axis (odd) → offset by half grid (8)
+        let snapped = snap_to_build_grid(Vec2::new(100.0, 100.0), (16.0, 16.0));
+        // Should snap to multiples of 16 + 8
+        assert_eq!(snapped.x % BUILD_GRID_SIZE, BUILD_GRID_SIZE * 0.5);
+        assert_eq!(snapped.y % BUILD_GRID_SIZE, BUILD_GRID_SIZE * 0.5);
+    }
+
+    #[test]
+    fn snap_to_grid_even_cells() {
+        // Extractor: 32x32 → 2 cells each axis (even) → no offset
+        let snapped = snap_to_build_grid(Vec2::new(100.0, 100.0), (32.0, 32.0));
+        assert!((snapped.x % BUILD_GRID_SIZE).abs() < f32::EPSILON);
+        assert!((snapped.y % BUILD_GRID_SIZE).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn snap_to_grid_factory() {
+        // Factory: 48x48 → 3 cells (odd) → offset by half grid
+        let snapped = snap_to_build_grid(Vec2::new(500.0, 500.0), (48.0, 48.0));
+        let remainder_x = snapped.x % BUILD_GRID_SIZE;
+        assert!(
+            (remainder_x - BUILD_GRID_SIZE * 0.5).abs() < f32::EPSILON,
+            "factory x not on half-grid: remainder={}",
+            remainder_x,
+        );
+    }
+
+    #[test]
+    fn snap_idempotent() {
+        let size = (32.0, 32.0);
+        let first = snap_to_build_grid(Vec2::new(137.0, 263.0), size);
+        let second = snap_to_build_grid(first, size);
+        assert!(
+            (first.x - second.x).abs() < f32::EPSILON
+                && (first.y - second.y).abs() < f32::EPSILON,
+            "snap should be idempotent",
+        );
+    }
+
+    // --- TerrainHeightmap ---
+
+    #[test]
+    fn terrain_generate_correct_dimensions() {
+        let terrain = TerrainHeightmap::generate();
+        assert_eq!(terrain.heights.len(), TERRAIN_GRID_SIZE * TERRAIN_GRID_SIZE);
+    }
+
+    #[test]
+    fn terrain_deterministic() {
+        let a = TerrainHeightmap::generate();
+        let b = TerrainHeightmap::generate();
+        assert_eq!(a.heights, b.heights, "terrain generation must be deterministic");
+    }
+
+    #[test]
+    fn terrain_height_at_in_range() {
+        let terrain = TerrainHeightmap::generate();
+        // Sample various positions and ensure heights are non-negative and reasonable
+        let positions = [
+            (0.0, 0.0),
+            (200.0, 200.0),
+            (1000.0, 1000.0),
+            (1800.0, 1800.0),
+            (MAP_SIZE, MAP_SIZE),
+        ];
+        for (x, y) in positions {
+            let h = terrain.height_at(x, y);
+            assert!(
+                h >= 0.0 && h < 50.0,
+                "height_at({}, {}) = {} out of expected range",
+                x, y, h,
+            );
+        }
+    }
+
+    #[test]
+    fn terrain_height_at_clamps_negative() {
+        let terrain = TerrainHeightmap::generate();
+        // Negative coords should clamp, not panic
+        let h = terrain.height_at(-100.0, -100.0);
+        assert!(h >= 0.0);
+    }
+
+    #[test]
+    fn terrain_height_at_clamps_beyond_map() {
+        let terrain = TerrainHeightmap::generate();
+        // Beyond map should clamp, not panic
+        let h = terrain.height_at(MAP_SIZE + 500.0, MAP_SIZE + 500.0);
+        assert!(h >= 0.0);
+    }
+
+    #[test]
+    fn terrain_flat_at_player_spawn() {
+        let terrain = TerrainHeightmap::generate();
+        // Player spawn area (200,200) should be flat enough for any building
+        assert!(
+            terrain.is_flat_enough(200.0, 200.0, 48.0, 48.0),
+            "player spawn should be flat enough for factory",
+        );
+    }
+
+    #[test]
+    fn terrain_flat_at_enemy_spawn() {
+        let terrain = TerrainHeightmap::generate();
+        assert!(
+            terrain.is_flat_enough(1800.0, 1800.0, 48.0, 48.0),
+            "enemy spawn should be flat enough for factory",
+        );
+    }
+
+    // --- Stats lookups ---
+
+    #[test]
+    fn unit_type_stats_values() {
+        assert_eq!(UnitType::Scout.stats().hp, 80.0);
+        assert_eq!(UnitType::Scout.stats().speed, 200.0);
+        assert_eq!(UnitType::Tank.stats().hp, 200.0);
+        assert_eq!(UnitType::Artillery.stats().min_attack_range, 150.0);
+        assert_eq!(UnitType::Artillery.stats().attack_range, 400.0);
+        assert_eq!(UnitType::Assault.stats().hp, 400.0);
+        assert_eq!(UnitType::Raider.stats().speed, 160.0);
+    }
+
+    #[test]
+    fn building_type_stats_values() {
+        assert_eq!(BuildingType::MetalExtractor.stats().metal_cost, 50.0);
+        assert_eq!(BuildingType::SolarCollector.stats().energy_cost, 0.0);
+        assert_eq!(BuildingType::Factory.stats().size, (48.0, 48.0));
+        assert_eq!(BuildingType::LLT.stats().attack_damage, 25.0);
+        assert_eq!(BuildingType::LLT.stats().attack_range, 250.0);
+        assert_eq!(BuildingType::Wall.stats().hp, 500.0);
+        assert_eq!(BuildingType::Wall.stats().size, (16.0, 16.0));
+        assert_eq!(BuildingType::RadarTower.stats().metal_cost, 60.0);
+    }
+
+    #[test]
+    fn commander_stats_values() {
+        assert_eq!(COMMANDER_STATS.hp, 500.0);
+        assert_eq!(COMMANDER_STATS.speed, 80.0);
+        assert_eq!(COMMANDER_STATS.attack_damage, 30.0);
+    }
+
+    // --- NavGrid ---
+
+    #[test]
+    fn navgrid_dimensions() {
+        assert_eq!(NAV_GRID_SIZE, 125);
+        // MAP_SIZE / BUILD_GRID_SIZE = 2000/16 = 125
+    }
+
+    #[test]
+    fn navgrid_game_to_cell_and_back() {
+        let terrain = TerrainHeightmap::generate();
+        let grid = NavGrid::new(&terrain);
+        // Cell (0,0) center should be at (8,8)
+        let center = grid.cell_to_game(0, 0);
+        assert!((center.x - 8.0).abs() < f32::EPSILON);
+        assert!((center.y - 8.0).abs() < f32::EPSILON);
+        // Converting back
+        let (cx, cy) = grid.game_to_cell(center.x, center.y);
+        assert_eq!(cx, 0);
+        assert_eq!(cy, 0);
+    }
+
+    #[test]
+    fn navgrid_mark_building() {
+        let terrain = TerrainHeightmap::generate();
+        let mut grid = NavGrid::new(&terrain);
+        // Mark a 32x32 building at center (200, 200)
+        let center = Vec2::new(200.0, 200.0);
+        grid.mark_building(center, (32.0, 32.0), true);
+        let (cx, cy) = grid.game_to_cell(200.0, 200.0);
+        assert!(grid.blocked[cy * NAV_GRID_SIZE + cx]);
+        // Unmark
+        grid.mark_building(center, (32.0, 32.0), false);
+        assert!(!grid.blocked[cy * NAV_GRID_SIZE + cx]);
+    }
+
+    #[test]
+    fn navgrid_version_bumps_on_change() {
+        let terrain = TerrainHeightmap::generate();
+        let mut grid = NavGrid::new(&terrain);
+        let v0 = grid.version;
+        grid.mark_building(Vec2::new(100.0, 100.0), (16.0, 16.0), true);
+        grid.finish_sync();
+        assert_eq!(grid.version, v0.wrapping_add(1));
+        // No change → no bump
+        grid.finish_sync();
+        assert_eq!(grid.version, v0.wrapping_add(1));
+    }
+
+    #[test]
+    fn navgrid_spawn_area_passable() {
+        let terrain = TerrainHeightmap::generate();
+        let grid = NavGrid::new(&terrain);
+        // Player spawn area (200,200) should be passable for both classes
+        let (cx, cy) = grid.game_to_cell(200.0, 200.0);
+        assert!(grid.is_passable(cx, cy, MoveClass::Bot));
+        assert!(grid.is_passable(cx, cy, MoveClass::Vehicle));
+    }
+
+    #[test]
+    fn navgrid_out_of_bounds_not_passable() {
+        let terrain = TerrainHeightmap::generate();
+        let grid = NavGrid::new(&terrain);
+        assert!(!grid.is_passable(NAV_GRID_SIZE, 0, MoveClass::Bot));
+        assert!(!grid.is_passable(0, NAV_GRID_SIZE, MoveClass::Bot));
+    }
+
+    #[test]
+    fn move_class_slope_limits() {
+        assert_eq!(MoveClass::Bot.max_slope_degrees(), 36.0);
+        assert_eq!(MoveClass::Vehicle.max_slope_degrees(), 18.0);
+    }
+
+    // --- StableIdMap ---
+
+    #[test]
+    fn stable_id_map_insert_and_get() {
+        let mut map = StableIdMap::default();
+        let entity = Entity::from_bits(42);
+        map.insert(1, entity);
+        assert_eq!(map.get(1), Some(entity));
+    }
+
+    #[test]
+    fn stable_id_map_get_missing() {
+        let map = StableIdMap::default();
+        assert_eq!(map.get(999), None);
+    }
+
+    #[test]
+    fn stable_id_map_remove() {
+        let mut map = StableIdMap::default();
+        let entity = Entity::from_bits(7);
+        map.insert(5, entity);
+        assert!(map.get(5).is_some());
+        map.remove(5);
+        assert_eq!(map.get(5), None);
+    }
+
+    #[test]
+    fn stable_id_map_overwrite() {
+        let mut map = StableIdMap::default();
+        let e1 = Entity::from_bits(1);
+        let e2 = Entity::from_bits(2);
+        map.insert(10, e1);
+        map.insert(10, e2);
+        assert_eq!(map.get(10), Some(e2));
+    }
+
+    // --- Resource defaults ---
+
+    #[test]
+    fn game_resources_default() {
+        let res = GameResources::default();
+        assert_eq!(res.metal, 1000.0);
+        assert_eq!(res.energy, 2000.0);
+        assert_eq!(res.metal_income, 0.0);
+        assert_eq!(res.energy_income, 0.0);
+    }
+
+    #[test]
+    fn all_team_resources_default_two_teams() {
+        let all = AllTeamResources::default();
+        assert_eq!(all.teams.len(), 2);
+        for team_res in &all.teams {
+            assert_eq!(team_res.metal, 1000.0);
+            assert_eq!(team_res.energy, 2000.0);
+        }
+    }
+
+    #[test]
+    fn next_stable_id_starts_at_one() {
+        let nsi = NextStableId::default();
+        assert_eq!(nsi.0, 1);
+    }
+
+    #[test]
+    fn local_player_default_is_zero() {
+        let lp = LocalPlayer::default();
+        assert_eq!(lp.id, 0);
+    }
+
+    // --- Constants sanity ---
+
+    #[test]
+    fn constants_positive() {
+        assert!(MAP_SIZE > 0.0);
+        assert!(CAMERA_SPEED > 0.0);
+        assert!(ZOOM_SPEED > 0.0);
+        assert!(MIN_ZOOM > 0.0);
+        assert!(MAX_ZOOM > MIN_ZOOM);
+        assert!(BUILD_RANGE > 0.0);
+        assert!(DGUN_RANGE > 0.0);
+        assert!(DGUN_ENERGY_COST > 0.0);
+        assert!(PROJECTILE_SPEED > 0.0);
+        assert!(MINIMAP_SIZE > 0.0);
+        assert!(BUILD_GRID_SIZE > 0.0);
+        assert!(EXTRACTOR_SNAP_RANGE > 0.0);
+        assert!(RECLAIM_RANGE > 0.0);
+        assert!(RECLAIM_TIME > 0.0);
+        assert!(WRECKAGE_DECAY_TIME > 0.0);
+        assert!(RADAR_RANGE > 0.0);
+    }
+
+    #[test]
+    fn nav_grid_size_matches_map() {
+        // NAV_GRID_SIZE should be MAP_SIZE / BUILD_GRID_SIZE
+        let expected = (MAP_SIZE / BUILD_GRID_SIZE) as usize;
+        assert_eq!(NAV_GRID_SIZE, expected);
+    }
+
+    // --- Metal spots ---
+
+    #[test]
+    fn metal_spots_within_map_bounds() {
+        for &(mx, my) in &METAL_SPOT_POSITIONS {
+            assert!(
+                mx >= 0.0 && mx <= MAP_SIZE,
+                "metal spot x={} out of map bounds",
+                mx
+            );
+            assert!(
+                my >= 0.0 && my <= MAP_SIZE,
+                "metal spot y={} out of map bounds",
+                my
+            );
+        }
+    }
+
+    #[test]
+    fn metal_spots_on_half_grid() {
+        // Metal spots should be on the half-grid (multiples of BUILD_GRID_SIZE / 2)
+        // so extractors can snap precisely to them
+        let half = BUILD_GRID_SIZE / 2.0;
+        for &(mx, my) in &METAL_SPOT_POSITIONS {
+            assert!(
+                (mx % half).abs() < f32::EPSILON,
+                "metal spot x={} not on half-grid (% {} = {})",
+                mx, half, mx % half,
+            );
+            assert!(
+                (my % half).abs() < f32::EPSILON,
+                "metal spot y={} not on half-grid (% {} = {})",
+                my, half, my % half,
+            );
+        }
+    }
+
+    #[test]
+    fn metal_spots_terrain_flat_for_extractor() {
+        let terrain = TerrainHeightmap::generate();
+        let ext_size = BuildingType::MetalExtractor.stats().size;
+        for &(mx, my) in &METAL_SPOT_POSITIONS {
+            assert!(
+                terrain.is_flat_enough(mx, my, ext_size.0, ext_size.1),
+                "metal spot ({}, {}) terrain not flat enough for extractor",
+                mx, my,
+            );
+        }
+    }
+
+    // --- Unit stats consistency ---
+
+    #[test]
+    fn all_unit_types_have_positive_hp() {
+        for ut in &[UnitType::Scout, UnitType::Raider, UnitType::Tank, UnitType::Assault, UnitType::Artillery] {
+            let s = ut.stats();
+            assert!(s.hp > 0.0, "{} has non-positive HP", s.name);
+        }
+        assert!(COMMANDER_STATS.hp > 0.0);
+    }
+
+    #[test]
+    fn all_unit_types_have_positive_speed() {
+        for ut in &[UnitType::Scout, UnitType::Raider, UnitType::Tank, UnitType::Assault, UnitType::Artillery] {
+            let s = ut.stats();
+            assert!(s.speed > 0.0, "{} has non-positive speed", s.name);
+        }
+        assert!(COMMANDER_STATS.speed > 0.0);
+    }
+
+    #[test]
+    fn all_unit_types_have_positive_radius() {
+        for ut in &[UnitType::Scout, UnitType::Raider, UnitType::Tank, UnitType::Assault, UnitType::Artillery] {
+            let s = ut.stats();
+            assert!(s.radius > 0.0, "{} has non-positive radius", s.name);
+        }
+        assert!(COMMANDER_STATS.radius > 0.0);
+    }
+
+    #[test]
+    fn all_unit_types_have_attack_range_gte_min() {
+        for ut in &[UnitType::Scout, UnitType::Raider, UnitType::Tank, UnitType::Assault, UnitType::Artillery] {
+            let s = ut.stats();
+            assert!(
+                s.attack_range >= s.min_attack_range,
+                "{} has attack_range {} < min_attack_range {}",
+                s.name, s.attack_range, s.min_attack_range,
+            );
+        }
+    }
+
+    #[test]
+    fn factory_produced_units_have_build_cost() {
+        // All non-commander units should have metal and energy cost
+        for ut in &[UnitType::Scout, UnitType::Raider, UnitType::Tank, UnitType::Assault, UnitType::Artillery] {
+            let s = ut.stats();
+            assert!(s.metal_cost > 0.0, "{} has no metal cost", s.name);
+            assert!(s.energy_cost > 0.0, "{} has no energy cost", s.name);
+            assert!(s.build_time > 0.0, "{} has no build time", s.name);
+        }
+    }
+
+    #[test]
+    fn commander_has_no_build_cost() {
+        assert_eq!(COMMANDER_STATS.metal_cost, 0.0);
+        assert_eq!(COMMANDER_STATS.energy_cost, 0.0);
+    }
+
+    #[test]
+    fn all_unit_types_have_sight_range() {
+        for ut in &[UnitType::Scout, UnitType::Raider, UnitType::Tank, UnitType::Assault, UnitType::Artillery] {
+            let s = ut.stats();
+            assert!(s.sight_range > 0.0, "{} has no sight range", s.name);
+        }
+        assert!(COMMANDER_STATS.sight_range > 0.0);
+    }
+
+    #[test]
+    fn scout_is_fastest_unit() {
+        let scout_speed = UnitType::Scout.stats().speed;
+        for ut in &[UnitType::Raider, UnitType::Tank, UnitType::Assault, UnitType::Artillery] {
+            assert!(
+                scout_speed >= ut.stats().speed,
+                "scout should be fastest but {} is faster",
+                ut.stats().name,
+            );
+        }
+    }
+
+    #[test]
+    fn artillery_has_min_attack_range() {
+        let arty = UnitType::Artillery.stats();
+        assert!(
+            arty.min_attack_range > 0.0,
+            "artillery should have a minimum attack range",
+        );
+    }
+
+    // --- Building stats consistency ---
+
+    #[test]
+    fn all_building_types_have_positive_hp() {
+        let types = [
+            BuildingType::MetalExtractor,
+            BuildingType::SolarCollector,
+            BuildingType::Factory,
+            BuildingType::LLT,
+            BuildingType::Wall,
+            BuildingType::RadarTower,
+        ];
+        for bt in &types {
+            let s = bt.stats();
+            assert!(s.hp > 0.0, "{:?} has non-positive HP", bt);
+        }
+    }
+
+    #[test]
+    fn building_sizes_are_grid_aligned() {
+        let types = [
+            BuildingType::MetalExtractor,
+            BuildingType::SolarCollector,
+            BuildingType::Factory,
+            BuildingType::LLT,
+            BuildingType::Wall,
+            BuildingType::RadarTower,
+        ];
+        for bt in &types {
+            let s = bt.stats();
+            assert!(
+                (s.size.0 % BUILD_GRID_SIZE).abs() < f32::EPSILON,
+                "{:?} width {} not grid-aligned",
+                bt, s.size.0,
+            );
+            assert!(
+                (s.size.1 % BUILD_GRID_SIZE).abs() < f32::EPSILON,
+                "{:?} height {} not grid-aligned",
+                bt, s.size.1,
+            );
+        }
+    }
+
+    #[test]
+    fn only_llt_has_attack() {
+        // Among buildings, only LLT should deal damage
+        let passive_types = [
+            BuildingType::MetalExtractor,
+            BuildingType::SolarCollector,
+            BuildingType::Factory,
+            BuildingType::Wall,
+            BuildingType::RadarTower,
+        ];
+        for bt in &passive_types {
+            assert_eq!(
+                bt.stats().attack_damage, 0.0,
+                "{:?} should not have attack damage",
+                bt,
+            );
+        }
+        assert!(BuildingType::LLT.stats().attack_damage > 0.0);
+        assert!(BuildingType::LLT.stats().attack_range > 0.0);
+    }
+
+    // --- Terrain noise ---
+
+    #[test]
+    fn hash_noise_deterministic() {
+        let a = hash_noise(3.14, 2.71);
+        let b = hash_noise(3.14, 2.71);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn hash_noise_varies() {
+        let a = hash_noise(0.0, 0.0);
+        let b = hash_noise(1.0, 0.0);
+        let c = hash_noise(0.0, 1.0);
+        // At least two should differ (very unlikely all same)
+        assert!(a != b || b != c, "hash_noise should vary with inputs");
+    }
+
+    #[test]
+    fn hash_noise_bounded() {
+        // hash_noise uses .fract().abs() so should be in [0, 1)
+        for i in 0..100 {
+            let x = i as f32 * 0.37;
+            let y = i as f32 * 0.59;
+            let v = hash_noise(x, y);
+            assert!(v >= 0.0 && v <= 1.0, "hash_noise({}, {}) = {} out of [0,1]", x, y, v);
+        }
+    }
+
+    #[test]
+    fn terrain_noise_deterministic() {
+        let a = terrain_noise(5.0, 10.0);
+        let b = terrain_noise(5.0, 10.0);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn terrain_noise_bounded() {
+        for i in 0..100 {
+            let x = i as f32 * 0.5;
+            let y = i as f32 * 0.3;
+            let v = terrain_noise(x, y);
+            assert!(v >= 0.0 && v <= 1.0, "terrain_noise({}, {}) = {} out of [0,1]", x, y, v);
+        }
+    }
+
+    // --- Terrain heightmap additional ---
+
+    #[test]
+    fn terrain_height_bilinear_continuous() {
+        let terrain = TerrainHeightmap::generate();
+        // Walk in small steps; consecutive samples should differ by a bounded amount
+        let max_jump = 5.0; // max height change over 1 game unit
+        let mut prev = terrain.height_at(0.0, 0.0);
+        for i in 1..(MAP_SIZE as usize) {
+            let x = i as f32;
+            let h = terrain.height_at(x, x);
+            assert!(
+                (h - prev).abs() < max_jump,
+                "height jump too large at ({0},{0}): {1} -> {2}",
+                x, prev, h,
+            );
+            prev = h;
+        }
+    }
+
+    #[test]
+    fn terrain_ridges_are_higher_than_valley() {
+        let terrain = TerrainHeightmap::generate();
+        // NW ridge center should be higher than the valley floor center
+        let ridge_h = terrain.height_at(450.0, 450.0);
+        let valley_h = terrain.height_at(700.0, 200.0);
+        assert!(
+            ridge_h > valley_h,
+            "NW ridge ({}) should be higher than valley ({})",
+            ridge_h, valley_h,
+        );
+    }
+
+    #[test]
+    fn terrain_edges_are_flat() {
+        let terrain = TerrainHeightmap::generate();
+        // Corners should be very low due to edge falloff
+        let corner_h = terrain.height_at(0.0, 0.0);
+        assert!(
+            corner_h < 2.0,
+            "map corner should be near 0 due to edge falloff, got {}",
+            corner_h,
+        );
+    }
+
+    #[test]
+    fn terrain_spawn_areas_elevated() {
+        let terrain = TerrainHeightmap::generate();
+        // Spawn areas at (200,200) and (1800,1800) should be on plateaus (~12)
+        let player_h = terrain.height_at(200.0, 200.0);
+        let enemy_h = terrain.height_at(1800.0, 1800.0);
+        assert!(player_h > 8.0, "player spawn height {} too low", player_h);
+        assert!(enemy_h > 8.0, "enemy spawn height {} too low", enemy_h);
+    }
+
+    // --- NavGrid additional ---
+
+    #[test]
+    fn navgrid_cell_to_game_within_map() {
+        let terrain = TerrainHeightmap::generate();
+        let grid = NavGrid::new(&terrain);
+        for cy in 0..NAV_GRID_SIZE {
+            for cx in 0..NAV_GRID_SIZE {
+                let pos = grid.cell_to_game(cx, cy);
+                assert!(pos.x >= 0.0 && pos.x <= MAP_SIZE, "cell ({},{}) x={}", cx, cy, pos.x);
+                assert!(pos.y >= 0.0 && pos.y <= MAP_SIZE, "cell ({},{}) y={}", cx, cy, pos.y);
+            }
+        }
+    }
+
+    #[test]
+    fn navgrid_game_to_cell_clamps() {
+        let terrain = TerrainHeightmap::generate();
+        let grid = NavGrid::new(&terrain);
+        // Large coords should clamp to last cell
+        let (cx, cy) = grid.game_to_cell(99999.0, 99999.0);
+        assert!(cx < NAV_GRID_SIZE);
+        assert!(cy < NAV_GRID_SIZE);
+    }
+
+    #[test]
+    fn navgrid_mark_multiple_buildings_independent() {
+        let terrain = TerrainHeightmap::generate();
+        let mut grid = NavGrid::new(&terrain);
+        let pos_a = Vec2::new(200.0, 200.0);
+        let pos_b = Vec2::new(800.0, 800.0);
+        grid.mark_building(pos_a, (32.0, 32.0), true);
+        grid.mark_building(pos_b, (32.0, 32.0), true);
+
+        let (cx_a, cy_a) = grid.game_to_cell(200.0, 200.0);
+        let (cx_b, cy_b) = grid.game_to_cell(800.0, 800.0);
+        assert!(grid.blocked[cy_a * NAV_GRID_SIZE + cx_a]);
+        assert!(grid.blocked[cy_b * NAV_GRID_SIZE + cx_b]);
+
+        // Unmark A, B should still be blocked
+        grid.mark_building(pos_a, (32.0, 32.0), false);
+        assert!(!grid.blocked[cy_a * NAV_GRID_SIZE + cx_a]);
+        assert!(grid.blocked[cy_b * NAV_GRID_SIZE + cx_b]);
+    }
+
+    #[test]
+    fn navgrid_blocked_cell_not_passable() {
+        let terrain = TerrainHeightmap::generate();
+        let mut grid = NavGrid::new(&terrain);
+        let (cx, cy) = grid.game_to_cell(200.0, 200.0);
+        // Should start passable
+        assert!(grid.is_passable(cx, cy, MoveClass::Bot));
+        // Block it
+        grid.blocked[cy * NAV_GRID_SIZE + cx] = true;
+        assert!(!grid.is_passable(cx, cy, MoveClass::Bot));
+        assert!(!grid.is_passable(cx, cy, MoveClass::Vehicle));
+    }
+
+    // --- snap_to_build_grid additional ---
+
+    #[test]
+    fn snap_to_grid_near_zero() {
+        let snapped = snap_to_build_grid(Vec2::new(1.0, 1.0), (32.0, 32.0));
+        assert!(snapped.x >= 0.0);
+        assert!(snapped.y >= 0.0);
+    }
+
+    #[test]
+    fn snap_to_grid_near_map_edge() {
+        let snapped = snap_to_build_grid(Vec2::new(MAP_SIZE - 1.0, MAP_SIZE - 1.0), (32.0, 32.0));
+        // Should snap to a valid position near the edge
+        assert!(snapped.x > MAP_SIZE - BUILD_GRID_SIZE * 2.0);
+        assert!(snapped.y > MAP_SIZE - BUILD_GRID_SIZE * 2.0);
+    }
+
+    #[test]
+    fn snap_all_building_sizes_idempotent() {
+        let types = [
+            BuildingType::MetalExtractor,
+            BuildingType::SolarCollector,
+            BuildingType::Factory,
+            BuildingType::LLT,
+            BuildingType::Wall,
+            BuildingType::RadarTower,
+        ];
+        for bt in &types {
+            let size = bt.stats().size;
+            let first = snap_to_build_grid(Vec2::new(500.0, 500.0), size);
+            let second = snap_to_build_grid(first, size);
+            assert!(
+                (first.x - second.x).abs() < f32::EPSILON
+                    && (first.y - second.y).abs() < f32::EPSILON,
+                "{:?}: snap not idempotent (first={:?}, second={:?})",
+                bt, first, second,
+            );
+        }
+    }
+
+    // --- Explosion particle determinism ---
+
+    #[test]
+    fn explosion_particle_spread_deterministic() {
+        // Replicate the explosion angle computation from combat.rs
+        let seed = 42u64;
+        let mut angles = Vec::new();
+        for i in 0..8u64 {
+            let angle = (seed.wrapping_add(i).wrapping_mul(2654435761)) as f32
+                / u32::MAX as f32
+                * std::f32::consts::TAU;
+            angles.push(angle);
+        }
+        // Run again with same seed
+        let mut angles2 = Vec::new();
+        for i in 0..8u64 {
+            let angle = (seed.wrapping_add(i).wrapping_mul(2654435761)) as f32
+                / u32::MAX as f32
+                * std::f32::consts::TAU;
+            angles2.push(angle);
+        }
+        assert_eq!(angles, angles2, "explosion spread must be deterministic");
+    }
+
+    #[test]
+    fn explosion_particle_spread_distinct_angles() {
+        let seed = 100u64;
+        let mut angles = Vec::new();
+        for i in 0..8u64 {
+            let angle = (seed.wrapping_add(i).wrapping_mul(2654435761)) as f32
+                / u32::MAX as f32
+                * std::f32::consts::TAU;
+            angles.push(angle);
+        }
+        // All 8 angles should be distinct
+        for i in 0..angles.len() {
+            for j in (i + 1)..angles.len() {
+                assert!(
+                    (angles[i] - angles[j]).abs() > 0.01,
+                    "particles {} and {} have nearly identical angles",
+                    i, j,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn explosion_particle_velocities_have_upward_component() {
+        let seed = 7u64;
+        for i in 0..8u64 {
+            let angle = (seed.wrapping_add(i).wrapping_mul(2654435761)) as f32
+                / u32::MAX as f32
+                * std::f32::consts::TAU;
+            let speed = 40.0 + (i as f32) * 8.0;
+            let velocity = Vec3::new(
+                angle.cos() * speed,
+                30.0 + (i as f32) * 5.0,
+                angle.sin() * speed,
+            );
+            assert!(
+                velocity.y > 0.0,
+                "particle {} should have upward velocity, got y={}",
+                i, velocity.y,
+            );
+        }
+    }
+
+    #[test]
+    fn explosion_particle_lifetimes_positive_and_increasing() {
+        for i in 0..8u64 {
+            let lifetime = 0.6 + (i as f32) * 0.05;
+            assert!(lifetime > 0.0);
+            if i > 0 {
+                let prev = 0.6 + ((i - 1) as f32) * 0.05;
+                assert!(lifetime > prev);
+            }
+        }
+    }
+
+    #[test]
+    fn explosion_spread_different_seeds_differ() {
+        let compute_angles = |seed: u64| -> Vec<f32> {
+            (0..8u64)
+                .map(|i| {
+                    (seed.wrapping_add(i).wrapping_mul(2654435761)) as f32
+                        / u32::MAX as f32
+                        * std::f32::consts::TAU
+                })
+                .collect()
+        };
+        let a = compute_angles(1);
+        let b = compute_angles(2);
+        assert_ne!(a, b, "different seeds should produce different spreads");
+    }
+
+    // --- Minimap coordinate mapping ---
+
+    #[test]
+    fn minimap_coord_mapping_corners() {
+        // Verify the minimap coordinate formula used in visuals.rs
+        let check = |gx: f32, gy: f32| {
+            let rel_x = (gx / MAP_SIZE).clamp(0.0, 1.0);
+            let rel_y = (gy / MAP_SIZE).clamp(0.0, 1.0);
+            let px = rel_x * MINIMAP_SIZE - 2.0;
+            let py = rel_y * MINIMAP_SIZE - 2.0;
+            (px, py)
+        };
+        // Bottom-left corner
+        let (px, py) = check(0.0, 0.0);
+        assert!((px - (-2.0)).abs() < f32::EPSILON);
+        assert!((py - (-2.0)).abs() < f32::EPSILON);
+        // Top-right corner
+        let (px, py) = check(MAP_SIZE, MAP_SIZE);
+        assert!((px - (MINIMAP_SIZE - 2.0)).abs() < f32::EPSILON);
+        assert!((py - (MINIMAP_SIZE - 2.0)).abs() < f32::EPSILON);
+        // Center
+        let (px, py) = check(MAP_SIZE / 2.0, MAP_SIZE / 2.0);
+        assert!((px - (MINIMAP_SIZE / 2.0 - 2.0)).abs() < f32::EPSILON);
+        assert!((py - (MINIMAP_SIZE / 2.0 - 2.0)).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn minimap_coord_clamps_out_of_bounds() {
+        let gx = -100.0;
+        let gy = MAP_SIZE + 500.0;
+        let rel_x = (gx / MAP_SIZE).clamp(0.0, 1.0);
+        let rel_y = (gy / MAP_SIZE).clamp(0.0, 1.0);
+        assert_eq!(rel_x, 0.0);
+        assert_eq!(rel_y, 1.0);
     }
 }

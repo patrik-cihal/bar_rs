@@ -77,15 +77,15 @@ pub fn spawn_unit(
     };
 
     if is_commander {
-        entity.insert(Commander);
+        entity.insert((Commander, MoveClass::Bot));
     } else {
         match unit_type.unwrap() {
-            UnitType::Scout => { entity.insert(Scout); }
-            UnitType::Raider => { entity.insert((Raider, VehicleAnim)); }
-            UnitType::Tank => { entity.insert((Tank, VehicleAnim)); }
-            UnitType::Assault => { entity.insert((Assault, VehicleAnim)); }
+            UnitType::Scout => { entity.insert((Scout, MoveClass::Bot)); }
+            UnitType::Raider => { entity.insert((Raider, VehicleAnim, MoveClass::Vehicle)); }
+            UnitType::Tank => { entity.insert((Tank, VehicleAnim, MoveClass::Vehicle)); }
+            UnitType::Assault => { entity.insert((Assault, VehicleAnim, MoveClass::Vehicle)); }
             UnitType::Artillery => {
-                entity.insert((Artillery, BipedWalkAnim { phase: 0.0, active: false }));
+                entity.insert((Artillery, BipedWalkAnim { phase: 0.0, active: false }, MoveClass::Bot));
             }
         }
     }
